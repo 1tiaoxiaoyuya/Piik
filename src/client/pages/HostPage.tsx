@@ -164,7 +164,7 @@ import {
 } from "../native/native-sender-peer";
 import { NativeSfuPublisher } from "../native/native-sfu-publisher";
 import { SfuPublisher } from "../sfu/publisher";
-import { NativeMediaBridge } from "../native/media-bridge";
+import { NativeMediaBridge, NativeMediaBridgeError } from "../native/media-bridge";
 import { NativeMediaIngress } from "../native/media-ingress";
 import {
   defaultNativeCapturePath,
@@ -492,6 +492,7 @@ export function HostPage({
     action: HostAction,
     target: NoticeValue["target"] = "operation",
   ): void {
+    if (error instanceof NativeMediaBridgeError) action = "connection";
     const permissionMissing = isCapturePermissionFailure(error, action);
     setNoticeValue({ kind: "text", text: readableError(error, action), target, tone: permissionMissing ? "warn" : "bad",
       comic: permissionMissing ? "hint-capture-browser" : action === "connection" ? "route-failed" : action === "capture" || action === "source"
@@ -1164,6 +1165,21 @@ export function HostPage({
       await nativePreviewTailRef.current;
       if (!isCurrentShare(generation, shareGeneration)) return null;
       if (nativeClientRef.current !== client) throw new Error("Piik App is unavailable");
+      // Acquire the required Browser peer before starting capture. Pending
+      // cancellation owns this bridge, but still closes control to abort startup.
+      bridge = new NativeMediaBridge(
+        shareGeneration,
+        client,
+        () => {
+          if (
+            nativeMediaBridgeRef.current === bridge &&
+            isCurrentShare(generation, shareGeneration)
+          ) {
+            endSharing({ key: "host.shareEnded" }, true, "source-failed", "bad");
+          }
+        },
+      );
+      nativeMediaBridgeRef.current = bridge;
       nativeSourceAudioRef.current = undefined;
       nativeEventCleanup = client.onEvent((event) => {
         if (event.shareId !== shareGeneration || !isCurrentShare(generation, shareGeneration) || nativeClientRef.current !== client) return;
@@ -1196,33 +1212,21 @@ export function HostPage({
       });
       shareStarted = true;
       if (!isCurrentShare(generation, shareGeneration)) {
+        if (nativeMediaBridgeRef.current === bridge) nativeMediaBridgeRef.current = null;
+        bridge.dispose();
         await client.stopShare(shareGeneration).catch(() => discardNativeClient(client));
         return null;
       }
       if (nativeClientRef.current !== client) throw new Error("Piik App is unavailable");
       nativeSourceAudioRef.current ??= started.sourceAudio ?? started.audio;
       videoCodecRef.current = manualVideoCodecPreference(started.codec);
-      bridge = new NativeMediaBridge(
-        shareGeneration,
-        client,
-        () => {
-          if (
-            nativeMediaBridgeRef.current === bridge &&
-            isCurrentShare(generation, shareGeneration)
-          ) {
-            endSharing({ key: "host.shareEnded" }, true, "source-failed", "bad");
-          }
-        },
-        started.audio,
-      );
       // Register ownership before waiting for the local bridge. A native edge
       // may fail immediately after becoming ready.
       ownNativeClient(client);
       nativeShareGenerationRef.current = shareGeneration;
-      nativeMediaBridgeRef.current = bridge;
       nativeModeRef.current = true;
       setNativeActive(true);
-      const stream = await bridge.start();
+      const stream = await bridge.start(started.audio);
       if (!isCurrentShare(generation, shareGeneration)) {
         if (nativeMediaBridgeRef.current === bridge) disposeNativeShare();
         else bridge.dispose();
@@ -1238,6 +1242,7 @@ export function HostPage({
       ) {
         disposeNativeShare();
       } else {
+        if (nativeMediaBridgeRef.current === bridge) nativeMediaBridgeRef.current = null;
         bridge?.dispose();
         if (shareStarted) {
           nativeShareCleanupRef.current = client
@@ -2858,6 +2863,7 @@ export function HostPage({
   }
 
   function setCaptureError(error: unknown, source: BrowserCaptureSource | undefined, action: "source" | "capture") {
+    debugError("capture", "failed", error, { action, source });
     const target = action === "source" ? "operation" : "television";
     if (source !== "camera") {
       setNoticeError(error, action, target);

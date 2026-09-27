@@ -1,12 +1,21 @@
 # Current TODO Ledger
 
-Last reviewed: 2026-09-25
+Last reviewed: 2026-09-27
 
 Only **Now** is executable. Product modules own behavior; Git/PRs own completed
 history. A parked idea is not implementation authority.
 
 ## Now
 
+- [ ] **Investigate Browser short-pulse quality cost.** Matched ordinary/pool
+  checks with two 1080p30 children, audio and a one-second bandwidth constraint
+  reproduce a deeper VP8 dip in the pool (270p versus 720p), with faster recovery.
+  H264 reaches 720p on both paths; unaffected children stay at 1080p. The
+  [pool evidence](./research/browser-local-encoding-pool.md#balanced-startup-and-recovery)
+  distinguishes one cold producer handoff from repeated churn. Assess a smaller
+  adaptation cost without a custom bitrate floor, delay policy or weakening
+  healthy-child isolation. These bounded Browser results do not identify the
+  unknown reporters' capture paths or establish their causes.
 - [ ] **Passive App attachment: design hold.** Site mode authorizes one selected
   origin and supplies native media without starting a local room server. A
   passive replacement needs an accepted site-consent/discovery flow; it must not
@@ -90,7 +99,11 @@ history. A parked idea is not implementation authority.
   retired event delivery and SFU replacement have locally reproduced defects
   and regression checks, but paired diagnostics and device/network details are
   still needed to establish this reporter's cause. Include an upstream relay's
-  report when present. The existing five-second Viewer membership grace during
+  report when present. Terminal Browser sender failures now notify their existing
+  preparation owner instead of silently disposing; expected retirement stays
+  silent. Native per-output keyframe requests no longer wake unrelated outputs.
+  These are confirmed local defects, not matched causes of the field reports.
+  The existing five-second Viewer membership grace during
   signaling loss is unchanged. This is distinct from the first-frame report below.
 - [ ] **Windows 11 capture border remains visible.** Identify the App/Browser
   capture path, Windows build and capture-border permission result. Local checks
@@ -108,31 +121,32 @@ history. A parked idea is not implementation authority.
 - [ ] **App discovery and share-start field acceptance.** Retest the missing-window
   report, an unreachable App despite its process running, and generic share-start
   failure. Distinguish site authorization, browser permission, control capacity,
-  enumeration and capture startup. A complete v1.6.3 Windows report confirms
-  Auto/Window/1080p30 balanced startup: hardware MFT event timeout, then software
-  probing, then cancellation because capture readiness did not arrive. The stall
-  within probing, teardown or WGC initialization remains unknown; one initial
-  VP8 statistics sample cannot establish its complete output history. Auto now
-  skips the redundant comparison when only VP8 remains. Injected unavailable
-  hardware and exhausted-probe-budget cases both capture and decode locally;
-  the affected machine still needs same-source Auto versus explicit VP8
-  acceptance. Do not extend deadlines without identifying the blocked stage.
-  Existing H264-retention/ICE-candidate repairs do not establish this cause; other
-  discovery/manual-H264 reports still need paired App/Browser diagnostics.
+  enumeration and capture startup. The v1.6.5 report reaches Auto-to-VP8 startup
+  after a hardware MFT timeout, then receives Browser `stop-share` before any
+  local-edge request. App handler timestamps are about 1.5 ms apart; this is not
+  a Browser-measured ACK interval or a no-frame deadline. Deliberately exhausting
+  real Chrome connection objects reproduces that sequence with physical capture;
+  bounded normal restarts showed no retained connections. Startup now acquires
+  the Browser connection first: the same exhaustion rejects before capture, and
+  releasing fixture-held objects permits sharing again. This establishes neither
+  a Piik resource leak nor the reporter's cause. The actual Browser exception,
+  loaded asset identity and reporter VP8 output remain unknown. Zero dimensions/
+  FPS in `starting` are valid. Diagnostics preserve preview initialization/
+  negotiation causes and distinguish MFT input/output waits; obtain matched
+  evidence before changing recovery or deadlines. Other discovery/manual-H264
+  reports still need paired evidence.
 - [ ] **Share ends after entering a game.** Screen sharing reportedly works
   until entering a game freezes the picture, followed seconds later by share
   termination. Version, capture path, codec and matched diagnostics are unknown.
   Locate the first capture/output, preview-bridge, control or authority failure;
   distinguish ordinary source silence/resize from target replacement, exclusive
   fullscreen, display-mode change and device loss. A reproduced downstream
-  retirement race no longer stops the shared source. Controlled-window checks
-  do not reproduce the reporting game/device environment.
-- [ ] **Brief blur followed by immediate recovery.** Compare the same source,
-  codec, peers and network with ordinary WebRTC before attributing the report
-  to pooling. The [pool checks](./research/browser-local-encoding-pool.md#balanced-startup-and-recovery)
-  cover rate-owner retention, publication startup, native recovery probing and
-  ordinary fallback. They do not establish this reporter's capture path or result;
-  correlate actual receiver dimensions, QP, resource adaptation and packet loss.
+  retirement race no longer stops the shared source. Actual CS2 checks found
+  and removed a separate decoded-silence rule that retired a connected Viewer
+  route while the Host stayed live; [capture research](./research/native-client-lifecycle.md#quiet-sources-and-viewer-recovery)
+  distinguishes that repair and successful restoration from the unknown cause
+  of the reported Host termination. Do not conflate source silence, receiver
+  decode interruption and capture-process failure.
 - [ ] **Windows 32-bit candidate acceptance.** Verify the isolated
   `spike/windows-x86-capture` candidate's launch, capture/audio, memory pressure,
   source replacement and update links on a 32-bit Windows device. WOW64

@@ -15,6 +15,7 @@ const BRIDGE_TIMEOUT_MS = 8_000;
 const MAX_PENDING_CANDIDATES = 64;
 
 export class NativeMediaBridgeError extends Error {}
+export class NativeMediaBridgeInitializationError extends NativeMediaBridgeError {}
 
 export interface NativeMediaBridgeControl {
   prepareLocalEdge(
@@ -32,12 +33,13 @@ export interface NativeMediaBridgeControl {
 }
 
 export class NativeMediaBridge {
-  readonly stream = new MediaStream();
+  readonly stream: MediaStream;
   readonly connectionId = createOpaqueId();
 
-  private readonly peer = new RTCPeerConnection();
+  private readonly peer: RTCPeerConnection;
   private readonly pendingCandidates: SignalCandidate[] = [];
   private unsubscribe: (() => void) | null = null;
+  private edgeRequested = false;
   private remoteDescriptionSet = false;
   private ready = false;
   private disposed = false;
@@ -48,10 +50,18 @@ export class NativeMediaBridge {
     private readonly shareId: string,
     private readonly control: NativeMediaBridgeControl,
     private readonly onFailed: () => void,
-    private readonly expectedAudio = false,
     private readonly sourceConnectionId?: string,
   ) {
-    observeDebugConnection(this.peer, { connectionId: this.connectionId, sourceConnectionId, shareId, role: "native-preview" });
+    let peer: RTCPeerConnection | undefined;
+    try {
+      this.stream = new MediaStream();
+      this.peer = peer = new RTCPeerConnection();
+      observeDebugConnection(this.peer, { connectionId: this.connectionId, sourceConnectionId, shareId, role: "native-preview" });
+    } catch (error) {
+      peer?.close();
+      debugError("native-bridge", "initialization-failed", error);
+      throw new NativeMediaBridgeInitializationError("Native media bridge could not initialize", { cause: error });
+    }
   }
 
   collectMetrics(accumulator: StatsAccumulator): Promise<ConnectionMetrics> {
@@ -66,7 +76,7 @@ export class NativeMediaBridge {
     );
   }
 
-  async start(): Promise<MediaStream> {
+  async start(expectedAudio = false): Promise<MediaStream> {
     if (this.disposed || this.unsubscribe) {
       throw new NativeMediaBridgeError("Native media bridge is unavailable");
     }
@@ -78,7 +88,7 @@ export class NativeMediaBridge {
           !this.ready &&
           this.peer.connectionState === "connected" &&
           this.stream.getVideoTracks().length > 0 &&
-          (!this.expectedAudio || this.stream.getAudioTracks().length > 0)
+          (!expectedAudio || this.stream.getAudioTracks().length > 0)
         ) {
           this.ready = true;
           this.rejectStart = null;
@@ -127,7 +137,7 @@ export class NativeMediaBridge {
               }
             : null,
         },
-      ).catch(() => this.fail("candidate-signal"));
+      ).catch((error) => this.fail("candidate-signal", error));
     });
     this.unsubscribe = this.control.onEvent((event) => {
       if (event.shareId !== this.shareId) return;
@@ -151,7 +161,7 @@ export class NativeMediaBridge {
           return;
         }
         void addRemoteIceCandidate(this.peer, event.candidate)
-          .catch(() => this.fail("candidate-apply"));
+          .catch((error) => this.fail("candidate-apply", error));
       } else if (
         event.type === "edge-state" &&
         (event.state === "failed" || event.state === "closed")
@@ -161,6 +171,7 @@ export class NativeMediaBridge {
     });
 
     const negotiate = async () => {
+      this.edgeRequested = true;
       const offer = await this.control.prepareLocalEdge(
         this.shareId,
         this.connectionId,
@@ -195,7 +206,7 @@ export class NativeMediaBridge {
     try {
       return await Promise.race([negotiate(), started]);
     } catch (error) {
-      this.fail("negotiation");
+      this.fail("negotiation", error);
       throw error instanceof NativeMediaBridgeError
         ? error
         : new NativeMediaBridgeError("Native media bridge failed", { cause: error });
@@ -213,14 +224,18 @@ export class NativeMediaBridge {
     this.pendingCandidates.length = 0;
     this.peer.close();
     this.stream.getTracks().forEach((track) => track.stop());
-    void this.control.closeEdge(this.shareId, this.connectionId).catch(
-      () => undefined,
-    );
+    if (this.edgeRequested) {
+      void this.control.closeEdge(this.shareId, this.connectionId).catch(
+        () => undefined,
+      );
+    }
   }
 
-  private fail(reason: string): void {
+  private fail(reason: string, error?: unknown): void {
     if (this.disposed) return;
-    debugEvent("native-bridge", "failed", { type: reason, state: this.ready ? "active" : "starting" });
+    const details = { type: reason, state: this.ready ? "active" : "starting" };
+    if (error === undefined) debugEvent("native-bridge", "failed", details);
+    else debugError("native-bridge", "failed", error, details);
     void this.reportFailureDiagnostics();
     if (this.ready) this.onFailed();
     this.dispose();

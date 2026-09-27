@@ -31,6 +31,9 @@ production behavior and remaining acceptance.
 - An audio-only update with the same capture video preserves the Browser video
   sender, encoding state and startup evidence on both direct and SFU paths.
   A new video source owns a new startup baseline; audio changes do not.
+  On Browser direct edges, source/audio renegotiation waits for the current
+  answer and coalesces newer intent into the next offer. A local operation queue
+  alone does not serialize the remote offer/answer exchange.
 - Windows native capture follows an explicitly stretched active display path
   for an entire display or a window covering that display, when the captured
   frame matches its desktop source dimensions. Other frames retain their own
@@ -48,7 +51,9 @@ production behavior and remaining acceptance.
   sharing. Native screen capture can include system playback audio and native
   window capture can include selected-process audio when the platform exposes it.
 - Authoritative Browser pause disables the current source and sender-owned tracks
-  while retaining the room and established routes. Native pause keeps capture
+  while retaining the room and established routes. The connection owns its
+  encoded-output pause even when shared encoding is unavailable; the pool pauses
+  a shared producer only when all its members pause. Native pause keeps capture
   alive but stops session output through the same owner. Black frames, track
   mute, or network failure are not interpreted as a user pause.
 - The Host preview displays the capture stream directly and creates no Viewer or
@@ -94,6 +99,11 @@ The three recommended profiles are ceilings, not delivery guarantees:
 1440p; frame rate, bitrate, and `maintain-resolution | balanced |
 maintain-framerate` remain independent controls. Display video uses the standard
 `contentHint = "motion"` for game motion.
+
+Framework-driven downscaling under bandwidth or device pressure is valid within
+the selected degradation preference. A low decoded resolution alone is not a
+defect and does not justify a new quality floor. Review avoidable disruption,
+recovery and healthy-child isolation instead of requiring a minimum observed size.
 
 Current acceptance targets are:
 
@@ -167,6 +177,11 @@ and producer observations remain distinct from the tiny carrier's statistics.
 Producer startup protection begins at actual outgoing publication, excluding
 local warmup and paused frames. The synthetic carrier uses screen-content
 transport probing; the real producer keeps the Host's picture adaptation.
+Capture constraints and the picture's sender FPS ceiling belong to the real
+source and producer, not the producer-driven carrier clock. Outgoing transport
+bitrate still follows the Host ceiling; ordinary fallback restores its picture
+sender limits. Preparation and applied-budget completion re-evaluate pending
+membership immediately; accepting a recovery frame still commits the handoff.
 The first eligible consumer follows the same path; unsupported APIs or failed
 pooling use ordinary senders. Prepared ordinary quality candidates, Native
 ingress and Browser SFU remain independent compositions.

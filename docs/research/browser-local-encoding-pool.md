@@ -162,15 +162,106 @@ the same probe bundle; these are single-run observations, not averages.
 B retained 1080p throughout all four runs, with no reported connection failure.
 The pooled traces created one separate producer for constrained A, then rejoined
 the retained healthy producer; they did not show repeated producer churn.
-The deeper VP8 dip remains a quality cost to investigate. These results do not
+The deeper VP8 dip is a measured adaptation tradeoff, not by itself a confirmed
+defect or a requirement to impose a resolution floor. These results do not
 establish the cause of an unknown reporter's blur or stream loss, nor test Native
 capture's separate keyframe-request path. Any further change must preserve
 healthy-child isolation and framework-owned adaptation.
+
+A further control retained two separate producers from startup, disallowing
+cross-member group compatibility only in an ignored copy of the same probe.
+With the same VP8 source, audio and pulse schedule, A reached 720p at 4.7 seconds
+and regained 1080p at 24.8 seconds; B stayed at 1080p and both producers retained
+their identity. No connection error was recorded. This supports a cold-producer
+cost alongside ordinary adaptation, without establishing a population average.
+Keeping every producer separate sacrifices sharing; reversing the handoff would
+instead move a healthy child onto a cold encoder. Neither is an accepted fix.
+
+Further serial checks on 2026-09-27 found avoidable handoff latency: successful
+preparation and budget updates waited for another 500 ms sample before
+re-evaluating membership. A falling budget could repeatedly fail the comparison
+against the previous applied limit while the old high-rate output kept sending.
+Both completions now invoke the existing coordinator; a successfully written
+recovery frame still commits selection. Sampling cadence, budget source and
+healthy-child isolation are unchanged.
+
+With duplicate carrier filtering removed in both runs, the VP8/audio pulse's
+cold-producer preparation-to-selection interval was 1,712 ms before this repair
+and 67 ms afterward. A regained 1080p at 12.7 s and 9.2 s after pulse start
+respectively; B stayed at 1080p. The final run had no queue overflow, backward
+source IDs or missed played-audio pulses. These are single-run observations,
+not an average recovery guarantee. Both reached 270p during adaptation. A final H264
+pulse reached 720p and regained 1080p at 6.7 s; B stayed at 1080p and neither
+output overflowed its queue.
+
+The remaining dip is consistent with a new encoder adapting at an already-low
+allocation. Pinned WebRTC's [initial size check](https://webrtc.googlesource.com/src/+/6f37672d358475cd17544121a12494da454d85fb/video/video_stream_encoder.cc#2535)
+uses the native startup allocation separately from encoder overshoot correction; restoring balanced
+restarts that initial check as described above. Local traces also show the
+producer's corrected encoder target below its configured budget while local BWE
+remains higher. The upstream [encoder bitrate adjuster](https://webrtc.googlesource.com/src/+/6f37672d358475cd17544121a12494da454d85fb/video/encoder_bitrate_adjuster.h)
+uses conservative startup
+utilization until it has enough frames. These are distinct mechanisms; the
+current evidence does not isolate each one's contribution to the lowest size.
+There is no verified API for transferring a mature encoder's adaptation history
+to the new producer. A bitrate multiplier, longer protection interval or delayed
+demand would change adaptation policy, rather than repair these completion bugs.
 
 Budget attribution remains unchanged: targetBitrate is the encoder's allocated
 target, not raw link bandwidth ([upstream stats correction](https://webrtc.googlesource.com/src/+/fe25b0e928ea4e64aa134f5dc8012343320deec5%5E%21/)).
 Replacing it with availableOutgoingBitrate would bypass native allocation and
 protection. Keep producer, carrier, egress and decoded observations separate.
+
+### Carrier Capture Constraints
+
+Serial Chrome 152 pulse checks on 2026-09-27 found that `HostPeer` applied real
+capture constraints to the producer-driven canvas. Filtering those clock frames
+can leave encoded data queued; reaching the four-frame bound then discards the
+dependency chain and requests recovery. A second FPS limit on its synthetic
+sender also filtered unevenly delivered clock frames. Track identity excludes
+only the canvas from capture constraints, and carrier configuration removes the
+duplicate sender FPS limit. The real producer retains the Host's picture limits;
+outgoing bitrate remains bounded and ordinary fallback restores sender FPS.
+
+With the same two-child VP8/audio fixture and 5 Mbps ceiling, queue-overflow
+recovery counts across each complete run were:
+
+| Source ceiling | Before, A / B | Without canvas capture constraints, A / B |
+| --- | --- | --- |
+| 30 fps | 36 / 31 | 6 / 1 |
+| 60 fps | 84 / 75 | 52 / 38 |
+
+Removing only the sender FPS ceiling left 29 / 27 at 30 fps. Removing both
+ceilings yielded 1 / 0. A separate 30-second healthy check at the 60 fps ceiling
+isolated the second filter: with capture constraints already removed, retaining
+the sender FPS limit produced 23 / 15 overflows; removing it produced 0 / 0.
+Decoded cadence rose from about 41 / 42 to 45 / 45 fps in that fixture. A
+three-second quiet interval followed by resumed production also had no overflow;
+retained carrier age stayed below 49 ms. Supplemental clock draws were tested
+but added no benefit over removing the duplicate limit, so no pump or timer was
+added. The four-frame bound and dependency-chain recovery remain intact.
+
+These checks establish a redundant filtering cost, not lossless delivery under
+all load. A 60 fps short-pulse run still recorded four overflows on constrained A
+and none on B; both recovered, and B retained 1080p. They do not establish
+sustained 60 fps or game quality. Cold-producer adaptation remains separate from
+carrier recovery. Raw traces and ablation fixtures remain ignored artifacts.
+
+VP8 and H264 checks on the final implementation cover live 720p60 settings,
+quiet-source 480p30 changes, pause/resume, source replacement and injected
+producer failure. Both retained fresh output within the selected ceilings and
+returned to ordinary sending on the existing connections. H264 source replacement
+had an approximately 0.5 s picture transition: the matching audio pulse arrived,
+but its brief picture marker did not. Ordinary frames resumed before the new
+pool selected output, so that gap is not a producer-readiness wait. Earlier
+fixtures also have source-transition gaps; these observations do not establish
+gap-free replacement or a new regression. They cover bounded synthetic media
+lifecycle, not real-game endurance or every physical device.
+
+The [canvas capture draft](https://w3c.github.io/mediacapture-fromelement/#html-canvas-element-media-capture-extensions)
+models `requestFrame()` as a pending request, not a counted queue of clock ticks.
+Do not infer one delivered carrier frame per call or enlarge the encoded queue
+to hide lost timing.
 
 ## Cost And Accounting
 

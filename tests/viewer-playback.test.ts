@@ -1,8 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { nextViewerMediaBinding, prepareViewerPlayback } from "../src/client/media/viewer-playback.ts";
+import { nextViewerMediaBinding, playbackFailure, prepareViewerPlayback } from "../src/client/media/viewer-playback.ts";
 
 describe("Viewer playback binding", () => {
+  it("distinguishes canceled playback from autoplay denial and actual failures", () => {
+    expect(playbackFailure(new DOMException("Paused", "AbortError"))).toBeNull();
+    expect(playbackFailure({ name: "AbortError" })).toBeNull();
+    expect(playbackFailure(new DOMException("Blocked", "NotAllowedError"))).toBe("autoplay-blocked");
+    expect(playbackFailure(new DOMException("Unsupported", "NotSupportedError"))).toBe("playback-failed");
+    expect(playbackFailure(new Error("decode failed"))).toBe("playback-failed");
+    expect(playbackFailure(null)).toBe("playback-failed");
+  });
+
   it("retains video identity across audio arrival, replacement and removal", () => {
     let audio: { id: string }[] = [];
     const stream = { getVideoTracks: () => [{ id: "video" }], getAudioTracks: () => audio } as MediaStream;
@@ -34,13 +43,29 @@ describe("Viewer playback binding", () => {
       srcObject: null as MediaProvider | null,
       pause: vi.fn(),
     };
+    const pauseState = { active: false, resume: false };
 
-    expect(prepareViewerPlayback(video, stream, false)).toBe(true);
+    expect(prepareViewerPlayback(video, stream, false, pauseState)).toBe(true);
     expect(video.srcObject).toBe(stream);
-    expect(prepareViewerPlayback(video, stream, false)).toBe(true);
+    expect(prepareViewerPlayback(video, stream, false, pauseState)).toBe(true);
     expect(video.pause).not.toHaveBeenCalled();
 
-    expect(prepareViewerPlayback(video, stream, true)).toBe(false);
+    expect(prepareViewerPlayback(video, stream, true, pauseState)).toBe(false);
     expect(video.pause).toHaveBeenCalledOnce();
+  });
+
+  it.each([false, true])("arms Host resume on a new binding regardless of the old local pause (%s)", (resume) => {
+    const stream = {} as MediaStream;
+    const video = { srcObject: stream, pause: vi.fn() };
+    const pauseState = { active: true, resume };
+
+    // A new video generation can reuse the same MediaStream object.
+    expect(prepareViewerPlayback(video, stream, true, pauseState)).toBe(false);
+    expect(video.pause).toHaveBeenCalledOnce();
+    expect(pauseState).toEqual({ active: true, resume: true });
+
+    // If the Host has already resumed, the new binding starts immediately.
+    expect(prepareViewerPlayback(video, stream, false, pauseState)).toBe(true);
+    expect(pauseState).toEqual({ active: false, resume: false });
   });
 });

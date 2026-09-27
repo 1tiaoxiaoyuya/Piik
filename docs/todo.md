@@ -7,25 +7,27 @@ history. A parked idea is not implementation authority.
 
 ## Now
 
-- [ ] **Investigate Browser short-pulse quality cost.** Matched ordinary/pool
-  checks with two 1080p30 children, audio and a one-second bandwidth constraint
-  reproduce a deeper VP8 dip in the pool (270p versus 720p), with faster recovery.
-  H264 reaches 720p on both paths; unaffected children stay at 1080p. The
-  [pool evidence](./research/browser-local-encoding-pool.md#balanced-startup-and-recovery)
-  distinguishes one cold producer handoff from repeated churn. Assess a smaller
-  adaptation cost without a custom bitrate floor, delay policy or weakening
-  healthy-child isolation. These bounded Browser results do not identify the
-  unknown reporters' capture paths or establish their causes.
-- [ ] **Passive App attachment: design hold.** Site mode authorizes one selected
-  origin and supplies native media without starting a local room server. A
-  passive replacement needs an accepted site-consent/discovery flow; it must not
-  admit arbitrary sites or add another runtime owner. Keep Site mode until that
-  decision; removal of the Demo prefill does not authorize changing site trust.
+- [ ] **Published-product bug and experience acceptance.** Prioritize share
+  startup, audio/source changes, sustained viewing, recovery and retirement,
+  admission, and narrow/touch UI. Verify confirmed fixes through the existing
+  owners before resuming feature polish. Keep field reports without matched
+  evidence separate from locally reproduced defects.
 - [ ] **Complete manual accessible-name review.** Verify the empty video's
   screen-reader output: Chromium exposes an unavailable-media
   description despite the literal shared-picture label and no media error. Also
   review accessible naming on disabled tooltip wrappers and the UI catalogue's
   paired-character example; automated checks leave those for manual review.
+
+## Deferred Feature Work
+
+Feature design and interaction polish are paused while the bug/experience phase
+is active. Retain these decisions for resumption, not as parallel work.
+
+- [ ] **Passive App attachment: design hold.** Site mode authorizes one selected
+  origin and supplies native media without starting a local room server. A
+  passive replacement needs an accepted site-consent/discovery flow; it must not
+  admit arbitrary sites or add another runtime owner. Keep Site mode until that
+  decision; removal of the Demo prefill does not authorize changing site trust.
 - [ ] **Refine the isolated room-interaction prototype.** Review chat, optional
   danmaku and participant-targeted reactions for usability, placement and intended
   cross-view synchronization. Preserve room authorization and media-route owners.
@@ -188,6 +190,10 @@ not establish better connection success or speed; this note adds no retry policy
    evidence and capacity assertions with the current sender-owned quality
    contract; its old Viewer-only trigger is not a valid quality acceptance gate.
 2. **Broader quality work.** Reopen from measured benefit at acceptable complexity.
+   The [Browser pool comparison](./research/browser-local-encoding-pool.md#balanced-startup-and-recovery)
+   records a cold-encoder adaptation tradeoff; a low resolution by itself is not
+   a defect or active repair target. Prioritize avoidable interruptions, failed
+   recovery or degradation of healthy siblings when evidence establishes them.
    Preserve chosen profiles, bitrate ceilings, endpoint capacity and P2P-first
    routing unless a new accepted decision supports changing them. No weighted
    score, all-pairs probes, periodic rebalancing, parent-wide prediction or

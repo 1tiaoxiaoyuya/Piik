@@ -272,6 +272,29 @@ all game/driver recovery or the separate immediate share-start failure report.
 Some focus changes did not remain foreground throughout a sampling window;
 only recorded window states and receiver progress establish those transitions.
 
+## Keyframe Request Ownership
+
+A direct Native source delivers a requested physical output through its
+coalescing callback, which can also wake a quiet capture. Repeating that PLI in
+the next input's output plan duplicates delivery. A relay differs: its callback
+requests upstream input, while its local derived encoder still needs the frame
+plan. Callback-free producers also retain that plan; group activation and
+handoff keep their separate recovery requests.
+
+A bounded Windows VP8 control-delivery comparison used the actual capture
+helper's decoder, output worker and WebRTC encoder with 640x360 encoded input.
+Three requests produced three recovery frames. Sending each request again
+immediately after reading the next `FrameBegin`, without an inserted delay,
+produced three pairs of consecutive recovery frames in both repetitions.
+The direct-source duplicate is removed at request ownership; relay and manual
+frame-plan delivery remain. This demonstrates duplicate encoded output, not
+its network cost or the cause of reported blur/disconnection. Full App/relay
+behavior was checked separately: the Windows App VP8 gate passed playback,
+quiet-source restoration, profile changes and source replacement. The real
+Native relay fixture retained shared/split/rejoined lower outputs and independent
+retirement with one decoder. These bounded checks do not establish public-network
+or other hardware acceptance.
+
 ## Windows Capture Borders
 
 The accepted scope keeps WGC for Windows capture and previews. Piik does not
@@ -297,9 +320,14 @@ The stream owner previously connected parent cancellation directly to
 `exec.CommandContext`, killing the child before its existing bounded stop
 sequence could release the platform session. Parent cancellation now enters
 that same `Stream.Close` sequence; an unresponsive process still has the existing
-one-second kill deadline. Subprocess regression checks cover explicit stop,
-parent cancellation, concurrent stop and an unresponsive child. A real WGC
-capture cancelled through this Go owner exited normally and cleared the border.
+one-second kill deadline. Retirement also drains stdout after any in-flight
+frame finishes: a full output pipe must not prevent the producer from reading
+its stop command. A controlled pipe check reproduced a responsive child being
+killed without this drain. The stream joins the drain before closing completes;
+[`exec.Cmd.Wait`](https://pkg.go.dev/os/exec#Cmd.StdoutPipe) closes the output
+pipe when the process ends. Subprocess regression checks cover explicit stop,
+parent cancellation, concurrent stop, blocked output and an unresponsive child.
+The earlier real WGC cancellation check exited normally and cleared the border.
 This establishes a retirement defect and its local repair, not the cause of
 every reported Windows 11 border: denied consent and other active captures
 remain distinct Windows-owned limits.

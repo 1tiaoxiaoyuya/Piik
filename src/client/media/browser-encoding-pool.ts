@@ -59,7 +59,6 @@ export class BrowserEncodingPool {
     // A fresh connection has no useful raw output to preserve. Start its
     // tiny clock immediately, rather than warming two full encoders first.
     if (!member.carrier) encoded.passthrough(requestKey);
-    encoded.setPaused(member.paused);
     if (!this.timer) this.timer = setInterval(() => void this.poll(), BUDGET_SAMPLE_MS);
     return {
       carrierScale: () => {
@@ -77,7 +76,6 @@ export class BrowserEncodingPool {
         if (member.disposed || member.paused === paused) return;
         member.paused = paused;
         member.previousOutput = undefined;
-        member.encoded.setPaused(paused);
         this.updatePauses();
       },
       metrics: (transport) => this.metrics(member, transport),
@@ -271,7 +269,12 @@ export class BrowserEncodingPool {
           group.updating = group.producer.update(group.profile, budget).catch(() => {
             if (this.groups.has(group)) this.failSource(group.source);
           })
-            .finally(() => { group.updating = undefined; });
+            .finally(() => {
+              group.updating = undefined;
+              // A ready downgrade can use this applied budget now. Waiting for
+              // another sample compares the previous limit to falling demand again.
+              if (!this.disposed && this.groups.has(group)) this.reconcile();
+            });
         }
       }
     }
@@ -290,7 +293,11 @@ export class BrowserEncodingPool {
     const group: Group = { producer, source: member.source, profile, codecKey: member.codecKey!, budget, ready: false, failed: false };
     this.groups.add(group);
     debugEvent("encoding-pool", "producer-preparing", { producerId: producer.id, trackId: member.source.id, codec: member.codecKey, budget, profile });
-    void producer.start(budget).then(() => { if (this.groups.has(group)) group.ready = true; }, (error) => {
+    void producer.start(budget).then(() => {
+      if (!this.groups.has(group)) return;
+      group.ready = true;
+      this.reconcile();
+    }, (error) => {
       debugError("encoding-pool", "producer-start-failed", error, { producerId: producer.id });
       if (this.groups.has(group)) { group.failed = true; this.failSource(group.source); }
     });

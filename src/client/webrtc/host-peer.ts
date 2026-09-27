@@ -97,6 +97,7 @@ export class HostPeer {
   private profileRevision = 0;
   private negotiationEpoch = 0;
   private ordinaryAnswerEpoch: number | null = null;
+  private pendingNegotiation = false;
   private senderMutationTail: Promise<void> = Promise.resolve();
   private negotiationTail: Promise<void> = Promise.resolve();
   private startupVideoProfilePending: boolean;
@@ -184,6 +185,7 @@ export class HostPeer {
       this.encodedOutput = new BrowserEncodingOutput(this.videoSender, () => {
         this.fail();
       }, { connectionId: this.connectionId, peerId: this.peerId });
+      this.encodedOutput.setPaused(this.paused);
     }
     this.attachVideoPool(this.stream.getVideoTracks()[0]!);
     this.audioTransceiver = this.connection.addTransceiver(audioTrack ?? "audio", {
@@ -331,6 +333,7 @@ export class HostPeer {
 
   setPaused(paused: boolean): void {
     this.paused = paused;
+    this.encodedOutput?.setPaused(paused);
     this.pooledVideo?.setPaused(paused);
     this.applyPausedState(this.senderVideoTrack, this.audioSender?.track ?? null);
     this.applyPausedState(this.replacementVideoTrack, this.replacementAudioTrack);
@@ -376,7 +379,7 @@ export class HostPeer {
       ) {
         return false;
       }
-      if (updateCaptureConstraints) {
+      if (updateCaptureConstraints && videoTrack !== this.encodedOutput?.track) {
         try {
           await this.waitForOperation(() => applyVideoCaptureProfile(videoTrack, profile));
         } catch (error) {
@@ -460,6 +463,7 @@ export class HostPeer {
     return this.enqueueNegotiation(async () => {
       if (
         this.disposed ||
+        this.ordinaryAnswerEpoch !== null ||
         this.connection.signalingState !== "stable"
       ) {
         return false;
@@ -506,6 +510,7 @@ export class HostPeer {
     this.lifetime.abort();
     this.nextNegotiationEpoch();
     this.ordinaryAnswerEpoch = null;
+    this.pendingNegotiation = false;
     if (this.statsTimer !== null) {
       window.clearInterval(this.statsTimer);
       this.statsTimer = null;
@@ -574,7 +579,11 @@ export class HostPeer {
         const next = binding?.carrierScale() === undefined ? cloneSenderVideoTrack(source) : this.encodedOutput!.track;
         try {
           this.applyPausedState(next, null);
-          await this.waitForOperation(() => applyVideoCaptureProfile(next, this.desiredProfile));
+          // The producer already limits real frames. Filtering its requested
+          // canvas clock frames again leaves encoded frames waiting for a tick.
+          if (next !== this.encodedOutput?.track) {
+            await this.waitForOperation(() => applyVideoCaptureProfile(next, this.desiredProfile));
+          }
           if (!owns()) { if (next !== this.encodedOutput?.track) next.stop(); return false; }
           if (next !== previous) await this.waitForOperation(() => sender.replaceTrack(next));
           await this.waitForOperation(() => configureVideoSender(sender,
@@ -636,6 +645,13 @@ export class HostPeer {
     return this.enqueueNegotiation(async () => {
       if (this.disposed) {
         return false;
+      }
+      // Source/microphone changes may arrive before the current answer. Keep
+      // one offer in flight: another offer would let its predecessor's answer
+      // consume the newer epoch. The next offer reads the latest transceivers.
+      if (this.ordinaryAnswerEpoch !== null) {
+        this.pendingNegotiation = true;
+        return true;
       }
       return this.createOwnedOffer(restart, this.nextNegotiationEpoch());
     });
@@ -713,12 +729,20 @@ export class HostPeer {
       await this.flushCandidates();
       if (this.ownsAnswer(epoch)) {
         this.ordinaryAnswerEpoch = null;
+        if (this.pendingNegotiation) {
+          this.pendingNegotiation = false;
+          // Already inside negotiationTail; enqueueing here would deadlock.
+          if (!(await this.createOwnedOffer(false, this.nextNegotiationEpoch()))) {
+            this.fail();
+          }
+        }
       }
     } catch (error) {
       if (!this.ownsAnswer(epoch)) {
         return;
       }
       this.ordinaryAnswerEpoch = null;
+      this.pendingNegotiation = false;
       throw error;
     }
   }

@@ -212,6 +212,7 @@ class FakePeerConnection {
       return;
     }
     this.localDescription = description as RTCSessionDescription;
+    this.signalingState = "have-local-offer";
   }
 
   async setRemoteDescription(
@@ -225,6 +226,7 @@ class FakePeerConnection {
       });
     }
     this.remoteDescription = description as RTCSessionDescription;
+    this.signalingState = "stable";
   }
 
   releaseDeferredRemoteDescription(): void {
@@ -550,7 +552,67 @@ function encodedPeerFixture() {
     failAudio: () => audio.error(new Error("audio transform failed")) };
 }
 
-describe("HostPeer terminal media failure", () => {
+describe("HostPeer encoded output ownership", () => {
+  it.each(["initial", "replacement"])("owns output pause when the pool declines the %s source", async (phase) => {
+    const fixture = encodedPeerFixture();
+    const source = createTrack("video", "source");
+    const peer = new HostPeer("child", { iceServers: [] }, createStream(source, null),
+      QUALITY_PROFILES["720p30"], { sendSignal: () => true, onUpdate() {} },
+      VP8_ONLY_VIDEO_CODEC, undefined, false, fixture.pool);
+    try {
+      if (phase === "initial") {
+        peer.setPaused(true);
+        fixture.create.mockReturnValueOnce(null);
+      }
+      await peer.start();
+      if (phase === "replacement") {
+        peer.setPaused(true);
+        fixture.create.mockReturnValueOnce(null);
+        expect(await peer.replaceStream(createStream(createTrack("video", "declined-source"), null))).toBe(true);
+      }
+      const sender = FakePeerConnection.latest!.senders[0]!;
+      expect(sender.track!.enabled).toBe(false);
+      expect(fixture.output.passthrough).toHaveBeenCalled();
+      expect.soft(fixture.output.setPaused).toHaveBeenLastCalledWith(true);
+
+      peer.setPaused(false);
+      expect(sender.track!.enabled).toBe(true);
+      expect(fixture.output.setPaused).toHaveBeenLastCalledWith(false);
+      expect(source.stop).not.toHaveBeenCalled();
+    } finally {
+      peer.dispose();
+    }
+  });
+
+  it("keeps capture constraints on real tracks across pool attachment, profile changes and fallback", async () => {
+    const fixture = encodedPeerFixture();
+    const source = createTrack("video", "source");
+    const peer = new HostPeer("child", { iceServers: [] }, createStream(source, null),
+      QUALITY_PROFILES["720p30"], { sendSignal: () => true, onUpdate() {} },
+      VP8_ONLY_VIDEO_CODEC, undefined, false, fixture.pool);
+    await peer.start();
+    await acceptPeerAnswer(peer);
+    const sender = FakePeerConnection.latest!.senders[0]!;
+    await peer.updateCaptureProfile(QUALITY_PROFILES["720p30"]);
+    expect(sender.track!.applyConstraints).toHaveBeenCalled();
+    fixture.binding.carrierScale.mockReturnValue(1);
+    expect(await fixture.create.mock.calls[0]![5]()).toBe(true);
+    expect(sender.track).toBe(fixture.output.track);
+    for (const id of ["1080p60", "720p30"] as const) {
+      expect(await peer.updateCaptureProfile(QUALITY_PROFILES[id])).toBe(true);
+      expect(sender.getParameters().encodings[0]).not.toHaveProperty("maxFramerate");
+    }
+    expect(fixture.output.track.applyConstraints).not.toHaveBeenCalled();
+    fixture.binding.carrierScale.mockReturnValue(undefined);
+    expect(await fixture.create.mock.calls[0]![5]()).toBe(true);
+    expect(sender.track).not.toBe(source);
+    expect(sender.track).not.toBe(fixture.output.track);
+    expect(sender.track!.applyConstraints).toHaveBeenCalledWith(expect.objectContaining({ frameRate: { ideal: 30, max: 30 } }));
+    expect(sender.getParameters().encodings[0]!.maxFramerate).toBe(30);
+    peer.dispose();
+    expect(source.stop).not.toHaveBeenCalled();
+  });
+
   it.each(["video", "audio", "fallback", "rollback"])("reports %s failure once and keeps borrowed source tracks alive", async (kind) => {
     const fixture = encodedPeerFixture();
     const source = createTrack("video", "source"), audio = createTrack("audio", "audio");
@@ -1082,6 +1144,7 @@ describe("HostPeer source replacement", () => {
     );
 
     await expect(peer.start()).resolves.toBe(true);
+    await acceptPeerAnswer(peer);
     const connection = FakePeerConnection.latest!;
     expect(connection.transceiverInputs[1]?.trackOrKind).toBe("audio");
     expect(connection.senders[1]?.track).toBeNull();
@@ -1109,6 +1172,7 @@ describe("HostPeer source replacement", () => {
     );
 
     await expect(peer.start()).resolves.toBe(true);
+    await acceptPeerAnswer(peer);
     const connection = FakePeerConnection.latest!;
     await expect(
       peer.replaceStream(
@@ -1227,6 +1291,57 @@ describe("HostPeer source replacement", () => {
     expect(peer.getSnapshot().audioSenderParameters?.appliedMaxBitrate).toBe(
       192_000,
     );
+  });
+
+  it.each([false, true])("defers audio renegotiation until the current answer (restart=%s)", async (restart) => {
+    const video = createTrack("video", "shared-video");
+    const peer = createPeer(createStream(video, null));
+    const connection = FakePeerConnection.latest!;
+    const answer = (sdp: string) => peer.acceptSignal({ kind: "description", connectionId: peer.connectionId,
+      description: { type: "answer", sdp } });
+    try {
+      await expect(peer.start()).resolves.toBe(true);
+      if (restart) {
+        await answer("initial-answer");
+        await expect(peer.restartIce()).resolves.toBe(true);
+      }
+      const offers = connection.createOfferCallCount;
+      // Rapid microphone toggles coalesce, rather than superseding the offer.
+      for (const enabled of [true, false, true]) {
+        await expect(peer.replaceStream(createStream(video,
+          enabled ? createTrack("audio", "microphone") : null))).resolves.toBe(true);
+      }
+      expect(connection.createOfferCallCount).toBe(offers);
+      await expect(peer.restartIce()).resolves.toBe(false);
+      await answer("previous-answer-audio-inactive");
+      expect(connection.createOfferCallCount).toBe(offers + 1);
+      expect(connection.transceivers[1]?.direction).toBe("sendonly");
+      await answer("latest-answer-audio-recvonly");
+      expect(connection.remoteDescription?.sdp).toBe("latest-answer-audio-recvonly");
+      expect(connection.signalingState).toBe("stable");
+      expect(connection.createOfferCallCount).toBe(offers + 1);
+    } finally { peer.dispose(); }
+  });
+
+  it.each(["dispose", "offer-failure", "signal-failure"] as const)("retires deferred renegotiation on %s", async (ending) => {
+    const video = createTrack("video", "shared-video");
+    const sendSignal = vi.fn(() => true);
+    const onUpdate = vi.fn();
+    const peer = new HostPeer("viewer", { iceServers: [] }, createStream(video, null),
+      QUALITY_PROFILES["720p30"], { sendSignal, onUpdate });
+    const connection = FakePeerConnection.latest!;
+    await peer.start();
+    await peer.replaceStream(createStream(video, createTrack("audio", "microphone")));
+    if (ending === "dispose") peer.dispose();
+    if (ending === "offer-failure") FakePeerConnection.offersFailing = 1;
+    if (ending === "signal-failure") sendSignal.mockReturnValue(false);
+    await peer.acceptSignal({ kind: "description", connectionId: peer.connectionId,
+      description: { type: "answer", sdp: "previous-answer" } });
+    const failures = onUpdate.mock.calls.filter(([snapshot]) => snapshot.connectionState === "failed");
+    expect(failures).toHaveLength(ending === "dispose" ? 0 : 1);
+    expect(connection.connectionState).toBe("closed");
+    expect(connection.createOfferCallCount).toBe(ending === "dispose" ? 1 : 2);
+    peer.dispose();
   });
 
   it("retains restart candidates that arrive before the new answer", async () => {

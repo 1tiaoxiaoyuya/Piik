@@ -1,6 +1,6 @@
 # Current TODO Ledger
 
-Last reviewed: 2026-09-29
+Last reviewed: 2026-09-30
 
 Only **Now** is executable. Product modules own behavior; Git/PRs own completed
 history. A parked idea is not implementation authority.
@@ -12,10 +12,19 @@ history. A parked idea is not implementation authority.
   admission, and narrow/touch UI. Verify confirmed fixes through the existing
   owners before resuming feature polish. Keep field reports without matched
   evidence separate from locally reproduced defects.
-- [ ] **Windows native helper cost.** Measure GPU texture/view allocation,
-  WGC update cadence, source-wide keyframe demand and frame-rate bitrate
-  compensation under game load before changing them. VP8 CPU cost and these
-  candidate costs do not establish the reported system-wide lag's cause.
+- [ ] **Sustained Browser degradation.** The H264 field cause remains open.
+  [Comparisons and Chromium traces](./research/browser-local-encoding-pool.md#sustained-h264-recovery)
+  distinguish encoder recovery hysteresis from a tab-capture feedback/size-step
+  lock reproduced in bare WebRTC. Verify the upstream soft-target/hard-maximum
+  repair candidate against a patched Browser, which remains unbuilt. The Piik
+  sender boundary now isolates display frames while preserving native idle refresh,
+  capture intent and operation retirement. Real hidden-tab SFU checks pass;
+  broader device/background coverage remains. Native logs confirm content-driven
+  QP hysteresis and a cost from bitrate reconfiguration, but not repeated brief
+  blur. Match field Host/Viewer evidence
+  before assigning the field cause or declaring repeated brief blur fixed.
+  Retain existing clone/startup protections and candidate proof; no periodic
+  reset or quality floor. A recent Piik regression is not established.
 
 ## Deferred Feature Work
 
@@ -145,8 +154,12 @@ is active. Retain these decisions for resumption, not as parallel work.
 - [ ] **System becomes very laggy after starting a share.** Obtain mode, actual
   codec, profile, display refresh rate and CPU/GPU use, distinguishing startup
   from sustained lag. Auto's local selection checks and NVIDIA success do not
-  establish this reporter's cause; software encoding and the helper costs under
-  Now remain candidate explanations.
+  establish this reporter's cause. The bounded
+  [helper-cost checks](./research/native-client-media.md#windows-helper-cost-2026-09-29)
+  found no justified allocation/cadence change and no capture termination on the
+  tested NVIDIA machine. Saturated GPU/game-FPS impact, multi-output recovery
+  cost and the reporter's environment remain unmeasured; software encoding cost
+  alone is not a diagnosis.
 
 ## Next: P2P Connection And Feedback Evidence
 

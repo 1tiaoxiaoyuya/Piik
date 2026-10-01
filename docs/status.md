@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-09-29
+Last updated: 2026-10-02
 
 This is the compact execution/deployment index. Product modules own behavior,
 [verification status](./verification-status.md) owns unresolved physical limits,
@@ -34,6 +34,24 @@ and Git/PRs own completed history.
 Website delivery includes a bilingual reader documentation center generated
 from the repository's guides alongside the homepage, with search and detailed
 troubleshooting separate from the homepage FAQ.
+
+## Accepted Interaction Phase
+
+The accepted [room-interaction design](./research/room-interactions.md) includes
+the verified media repairs. It adds authenticated text and reactions
+over existing signaling, with optional local chat overlay and a shared floating
+panel. Its opted-in room session can outlive a publication; capture, quality and
+route owners remain unchanged. Optional Windows screen-audio exclusion uses the
+existing source/mixer boundary. Hosted Server
+also accepts an optional SFU-only policy through the same route controller.
+Windows native capture and thumbnails now share automatic HDR-to-SDR conversion;
+synthetic GPU and Browser reception checks pass, with physical HDR display
+acceptance still pending in [verification status](./verification-status.md).
+Room voice is outside the product plan; Host microphone commentary remains.
+4K remains deferred. The owner accepted the UI/model and bounded local acceptance
+and authorized v1.7.0 publication. Physical device limits remain open.
+Release artifacts and operator deployment records own delivery completion;
+[TODO](./todo.md#now) owns remaining work.
 
 ## Deployment
 

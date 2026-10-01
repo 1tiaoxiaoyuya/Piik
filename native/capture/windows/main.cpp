@@ -3,7 +3,7 @@
 
 #include <codecapi.h>
 #include <d3d10_1.h>
-#include <d3d11.h>
+#include <d3d11_1.h>
 #include <dxgi1_2.h>
 #include <evr.h>
 #include <fcntl.h>
@@ -32,6 +32,8 @@
 #include "capture_target.h"
 #include "capture_border.h"
 #include "capture_geometry.h"
+#include "capture_color.h"
+#include "capture_sdr.h"
 #include "process_audio.h"
 #include "h264_encoder.h"
 #ifndef PIIK_H264_FIXTURE
@@ -663,8 +665,9 @@ class FrameConverter final {
  public:
   explicit FrameConverter(
       ID3D11Device* device,
-      VideoProfile profile = kDefaultVideoProfile)
-      : device_(device), profile_(profile) {
+      VideoProfile profile = kDefaultVideoProfile,
+      DXGI_COLOR_SPACE_TYPE output_color = kSdrVideoColor)
+      : device_(device), profile_(profile), output_color_(output_color) {
     Check(device_->QueryInterface(IID_PPV_ARGS(&video_device_)),
           "video-processor-device");
     ComPtr<ID3D11DeviceContext> context;
@@ -673,13 +676,30 @@ class FrameConverter final {
   }
 
   ComPtr<ID3D11Texture2D> Convert(ID3D11Texture2D* source, UINT32 width,
-                                  UINT32 height, SIZE presentation) {
+                                  UINT32 height, SIZE presentation,
+                                  DXGI_COLOR_SPACE_TYPE input_color) {
     if (source == nullptr || width == 0 || height == 0 ||
         width > 16'384 || height > 16'384) {
       Fail("capture-size", "captured window dimensions are invalid");
     }
-    if (!enumerator_ || width != input_width_ || height != input_height_) {
-      Configure(width, height);
+    ComPtr<ID3D11Texture2D> normalized;
+    if (output_color_ == kSdrVideoColor && input_color != kDesktopColor &&
+        input_color != kSdrVideoColor) {
+      // YUV-to-YUV matrix/range changes are not reliable across tested drivers,
+      // even when reported as supported. Normalize through RGB on the GPU;
+      // ordinary RGB capture and canonical NV12 scaling stay single-pass.
+      if (!rgb_converter_)
+        rgb_converter_ = std::make_unique<FrameConverter>(device_.Get(), profile_, kDesktopColor);
+      normalized = rgb_converter_->Convert(source, width, height, presentation, input_color);
+      source = normalized.Get();
+      width = profile_.width;
+      height = profile_.height;
+      presentation = {static_cast<LONG>(width), static_cast<LONG>(height)};
+      input_color = kDesktopColor;
+    }
+    if (!enumerator_ || width != input_width_ || height != input_height_ ||
+        input_color != input_color_) {
+      Configure(width, height, input_color);
     }
 
     D3D11_TEXTURE2D_DESC output_description = {};
@@ -687,7 +707,8 @@ class FrameConverter final {
     output_description.Height = profile_.height;
     output_description.MipLevels = 1;
     output_description.ArraySize = 1;
-    output_description.Format = DXGI_FORMAT_NV12;
+    output_description.Format = output_color_ == kDesktopColor
+        ? DXGI_FORMAT_B8G8R8A8_UNORM : DXGI_FORMAT_NV12;
     output_description.SampleDesc.Count = 1;
     output_description.Usage = D3D11_USAGE_DEFAULT;
     output_description.BindFlags = D3D11_BIND_RENDER_TARGET;
@@ -745,7 +766,7 @@ class FrameConverter final {
   }
 
  private:
-  void Configure(UINT32 width, UINT32 height) {
+  void Configure(UINT32 width, UINT32 height, DXGI_COLOR_SPACE_TYPE input_color) {
     D3D11_VIDEO_PROCESSOR_CONTENT_DESC description = {};
     description.InputFrameFormat = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
     description.InputFrameRate = {profile_.frame_rate, 1};
@@ -762,20 +783,27 @@ class FrameConverter final {
     ComPtr<ID3D11VideoProcessor> processor;
     Check(video_device_->CreateVideoProcessor(enumerator.Get(), 0, &processor),
           "video-processor-create");
+    // The incoming frame owns its range/matrix. Never infer these from size.
+    video_context_->VideoProcessorSetStreamColorSpace1(processor.Get(), 0, input_color);
+    video_context_->VideoProcessorSetOutputColorSpace1(processor.Get(), output_color_);
     enumerator_ = std::move(enumerator);
     processor_ = std::move(processor);
     input_width_ = width;
     input_height_ = height;
+    input_color_ = input_color;
   }
 
   ComPtr<ID3D11Device> device_;
   VideoProfile profile_;
+  const DXGI_COLOR_SPACE_TYPE output_color_;
+  std::unique_ptr<FrameConverter> rgb_converter_;
   ComPtr<ID3D11VideoDevice> video_device_;
-  ComPtr<ID3D11VideoContext> video_context_;
+  ComPtr<ID3D11VideoContext1> video_context_;
   ComPtr<ID3D11VideoProcessorEnumerator> enumerator_;
   ComPtr<ID3D11VideoProcessor> processor_;
   UINT32 input_width_ = 0;
   UINT32 input_height_ = 0;
+  DXGI_COLOR_SPACE_TYPE input_color_ = kDesktopColor;
 };
 
 winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice
@@ -933,6 +961,7 @@ struct ProductArguments final {
   VideoProfile profile;
   std::vector<VideoProfile> outputs;
   bool show_capture_border = false;
+  bool exclude_audio = false;
 };
 
 DegradationPreference ParseDegradationPreference(const wchar_t* value) {
@@ -1020,7 +1049,8 @@ ProductArguments ParseProductArguments(int count, wchar_t** values) {
   }
   if (count == 5 && std::wstring(values[1]) == L"--capture-audio") {
     arguments.mode = ProductArguments::Mode::audio;
-    arguments.target_kind = ParseTargetKind(values[2]);
+    arguments.exclude_audio = std::wstring(values[2]) == L"exclude";
+    arguments.target_kind = arguments.exclude_audio ? piik::capture::TargetKind::window : ParseTargetKind(values[2]);
   } else if (count >= 16 && count <= 11 + 5 * piik::capture::kMaxOutputs && (count - 11) % 5 == 0 &&
              std::wstring(values[1]) == L"--encoded-video" &&
              std::wstring(values[2]) == L"--codec" &&
@@ -1126,7 +1156,7 @@ HRESULT RunAudioCapture(const ProductArguments& arguments) {
         stop.get(), should_stop, ready, pcm);
   }
   return piik::capture::CaptureProcessAudio(
-      arguments.pid, arguments.creation_time, stop.get(),
+      arguments.pid, arguments.creation_time, arguments.exclude_audio, stop.get(),
       should_stop,
       ready, pcm);
 }
@@ -1153,6 +1183,7 @@ UINT32 WindowsBuild() {
 void WriteCapabilityProbe() {
   constexpr UINT32 kCreateForWindowMinimumBuild = 18'362;
   constexpr UINT32 kProcessLoopbackMinimumBuild = 19'041;
+  constexpr UINT32 kProcessExclusionMinimumBuild = 20'348;
   const UINT32 build = WindowsBuild();
   bool window_capture = false;
   if (build >= kCreateForWindowMinimumBuild) {
@@ -1167,6 +1198,8 @@ void WriteCapabilityProbe() {
       build >= kProcessLoopbackMinimumBuild &&
       piik::capture::ProcessAudioAvailable();
   const bool system_audio = piik::capture::SystemAudioAvailable();
+  const bool process_audio_exclusion = build >= kProcessExclusionMinimumBuild &&
+      piik::capture::ProcessAudioAvailable(true);
 
   std::vector<Adapter> adapters = EnumerateAdapters();
   std::ostringstream output;
@@ -1178,6 +1211,7 @@ void WriteCapabilityProbe() {
          << ",\"microphone\":true,\"softwareVP8\":true"
          << ",\"processAudio\":"
          << (process_audio ? "true" : "false")
+         << ",\"processAudioExclusion\":" << (process_audio_exclusion ? "true" : "false")
          << ",\"systemAudio\":" << (system_audio ? "true" : "false")
          << ",\"adapters\":[";
   for (size_t adapter_index = 0; adapter_index < adapters.size();
@@ -1361,6 +1395,7 @@ VideoEncoderSelection SelectVideoEncoder(
 
 struct CaptureInput final {
   ComPtr<ID3D11Texture2D> texture;
+  DXGI_COLOR_SPACE_TYPE color_space = kDesktopColor;
   UINT32 width = 0;
   UINT32 height = 0;
   SIZE presentation{};
@@ -1448,7 +1483,7 @@ class OutputWorker final {
               converted_height = height;
             }
             return converter->Convert(input->texture.Get(), input->width,
-                                      input->height, input->presentation);
+                                      input->height, input->presentation, input->color_space);
           }, profile_.width, profile_.height, input->timestamp, work.recovery, work.bitrate);
         } catch (...) {
           // Device loss is current shared evidence; an old codec failure only
@@ -1703,12 +1738,13 @@ void RunEncodedVideo(ProductArguments arguments) {
     bool began = false;
     UINT64 last_timestamp = 0;
     auto submit = [&](ComPtr<ID3D11Texture2D> texture, UINT32 width, UINT32 height,
-                      UINT64 timestamp, UINT64 duration) {
+                      UINT64 timestamp, UINT64 duration, DXGI_COLOR_SPACE_TYPE color) {
       if ((began && timestamp <= last_timestamp) || width < arguments.profile.width || height < arguments.profile.height) {
         Fail("encoded-input-output", "decoded frame changed the source timeline or output bounds");
       }
       auto input = std::make_shared<CaptureInput>();
       input->texture = std::move(texture);
+      input->color_space = color;
       input->width = width;
       input->height = height;
       input->presentation = {static_cast<LONG>(width), static_cast<LONG>(height)};
@@ -1735,12 +1771,12 @@ void RunEncodedVideo(ProductArguments arguments) {
             Check(sample->GetSampleDuration(&duration), "decoded-duration");
             if (timestamp < 0 || duration <= 0) Fail("decoded-timing", "decoder did not preserve source timing");
             submit(OwnDecodedTexture(device, sample, width, height, stride), width, height,
-                   static_cast<UINT64>(timestamp), static_cast<UINT64>(duration));
+                   static_cast<UINT64>(timestamp), static_cast<UINT64>(duration), h264->ColorSpace());
           });
         } else {
           const auto decoded = vp8->Decode(input.data);
           if (!decoded.nv12.empty()) submit(UploadDecodedNV12(device, decoded.nv12.data(), decoded.width, decoded.height),
-              decoded.width, decoded.height, input.timestamp, input.duration);
+              decoded.width, decoded.height, input.timestamp, input.duration, kSdrVideoColor);
         }
       }
     }
@@ -1801,8 +1837,11 @@ void RunVideoCapture(ProductArguments arguments) {
   if (initial_size.Width <= 0 || initial_size.Height <= 0) {
     Fail("capture-size", "selected window has no capturable content");
   }
+  CaptureDisplayColor display_color(arguments.target_kind, arguments.source_id);
+  CaptureSdrConverter sdr(device.device.Get());
+  auto pool_format = display_color.Resolve().Format();
   Direct3D11CaptureFramePool pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
-      capture_device, DirectXPixelFormat::B8G8R8A8UIntNormalized, 2,
+      capture_device, static_cast<DirectXPixelFormat>(pool_format), 2,
       initial_size);
   GraphicsCaptureSession capture_session = pool.CreateCaptureSession(item);
   EnableFastCaptureUpdates(capture_session);
@@ -1964,15 +2003,17 @@ void RunVideoCapture(ProductArguments arguments) {
       }
       auto content_size = latest.ContentSize();
       if (content_size.Width <= 0 || content_size.Height <= 0) continue;
+      const auto color = display_color.Resolve();
       if (content_size.Width != pool_size.Width ||
-          content_size.Height != pool_size.Height) {
+          content_size.Height != pool_size.Height || color.Format() != pool_format) {
         latest.Close();
         latest = nullptr;
         latest_input.reset();
         pool.Recreate(capture_device,
-                      DirectXPixelFormat::B8G8R8A8UIntNormalized, 2,
+                      static_cast<DirectXPixelFormat>(color.Format()), 2,
                       content_size);
         pool_size = content_size;
+        pool_format = color.Format();
         continue;
       }
       ComPtr<ID3D11Texture2D> source = CaptureTexture(latest);
@@ -1983,13 +2024,7 @@ void RunVideoCapture(ProductArguments arguments) {
       UINT32 content_height = std::min<UINT32>(
           source_description.Height, static_cast<UINT32>(content_size.Height));
       auto input = std::make_shared<CaptureInput>();
-      auto owned_description = source_description;
-      owned_description.Usage = D3D11_USAGE_DEFAULT;
-      owned_description.CPUAccessFlags = 0;
-      owned_description.MiscFlags = 0;
-      owned_description.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
-      Check(device.device->CreateTexture2D(&owned_description, nullptr, &input->texture), "capture-owned-input");
-      device.context->CopyResource(input->texture.Get(), source.Get());
+      input->texture = sdr.Convert(source.Get(), color);
       input->width = content_width;
       input->height = content_height;
       input->timestamp = timestamp;

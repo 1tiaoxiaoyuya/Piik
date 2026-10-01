@@ -1,10 +1,46 @@
 # Native App Media Evidence
 
-- Reviewed: 2026-09-29
+- Reviewed: 2026-10-01
 - Scope: platform capture, shared encoded sources, Pion transport and Browser
   decode; current behavior belongs to [media quality](../standards/media-quality.md)
 - Status: Windows physical native Host and Viewer gates passed; macOS and Linux adapters
   compile and package but still require physical media gates
+
+## Windows Audio Exclusion
+
+A Windows 11 build 26200 check used two independent WinMM processes emitting
+500 Hz and 1500 Hz tones, through the production capture helper and Go PCM
+reader. Default-device loopback captured both at approximately 1799 amplitude;
+process inclusion retained the first with under 0.3 amplitude of the other,
+and exclusion retained the second with under 0.04 of the excluded tone. Target
+exit retired capture in about 42 ms; attempting the stale identity failed.
+No raw audio was saved. The extended capability probe completed in 300 ms.
+
+A parent/child follow-up used a silent selected parent with a 1900 Hz child,
+plus an independent 2900 Hz process. Process-scoped reference amplitudes were
+about 1799; exclusion retained the independent tone at 1800 and reduced the
+selected child's tone to 9.3 (under 0.6%). Parent exit retired capture in 64 ms;
+its stale identity was rejected. The reference uses each signal's own process
+capture: default-device loopback also includes unrelated playback and endpoint
+processing, so its amplitude is not a process-capture gain reference.
+
+The session fixture separately verifies failed exclusion replacement mutes
+source audio while preserving video, microphone and encoded audio output; pause
+and audio-profile changes retain the selected input. These checks establish a
+local Windows implementation and one direct child, not coverage of every voice
+application's process tree or simultaneous playback across several output devices. Those remain
+device acceptance boundaries. [ADR-0008](../adr/0008-window-scoped-audio-capture.md)
+owns the platform choice.
+
+The [Windows activation contract](https://learn.microsoft.com/en-us/windows/win32/api/audioclientactivationparams/ns-audioclientactivationparams-audioclient_process_loopback_params)
+accepts one PID and its process tree, not a list of unrelated processes.
+The [win-capture-audio implementation](https://github.com/bozbez/win-capture-audio/releases/tag/v2.2.0-beta)
+supports broader exclusion by tracking audio sessions, capturing non-matching
+processes and mixing them. Applying that design here would require session
+discovery, process-tree deduplication and bounded multi-input mixing; Piik's
+current source-plus-microphone mixer does not own that inventory. Multiple
+exclusions therefore require a capture design change, not just a multi-select
+control. Combining exclusion streams does not itself exclude their combined set.
 
 ## Initial Physical Evidence (2026-09-05)
 
@@ -270,6 +306,33 @@ decoded media or other GPUs. Software encoding costs more CPU here, but neither
 that result nor the allocation timings establish the reported system-wide lag's
 cause. Retain the existing implementation; reopen optimization from a matched
 bottleneck.
+
+## Native H.264 Motion Quality
+
+Issue [#432](https://github.com/TNTcraftHIM/Piik/issues/432) reports more visible
+blocking with native H.264 than VP8 on v1.6.7. Review of its attached Browser
+report confirms 720p30 in both comparison windows, roughly 11 Mbps received,
+and no reported packet loss; the 1080p60 H.264 window receives roughly 10 Mbps.
+Those samples establish delivered format and transport observations, not equal
+source content or objective picture quality. No encoded stream, reference
+frames or QP measurements accompany that report.
+
+The reporter retracted the initial CBR bitrate-ceiling diagnosis after finding
+that the experimental fixture changed bitrate during the measured interval.
+That switching belongs to `PIIK_H264_FIXTURE` in `windows/main.cpp`, not live
+capture. The corrected experiment reports CBR reaching its requested bitrate.
+Production `h264_encoder.cpp` explicitly requests and validates Baseline; the
+Browser's negotiated `profile-level-id` alone is not an inspection of emitted
+SPS. The later experimental CABAC result cannot establish the production
+Baseline bitstream's behavior. Microsoft's [encoder reference](https://learn.microsoft.com/en-us/windows/win32/medfound/h-264-video-encoder)
+distinguishes profile, rate control and optional quality/speed settings.
+
+The original 720p comparison remains unresolved. An equal-content comparison
+must preserve actual bitrate, frame rate, latency and production codec settings,
+inspect the resulting bitstream and retain reference/decoded pictures. Raising
+the bitrate ceiling, lowering the default frame rate or changing profile is not
+justified by these logs alone; those changes have bandwidth, motion and receiver
+compatibility consequences.
 
 ## Implementation Boundary
 

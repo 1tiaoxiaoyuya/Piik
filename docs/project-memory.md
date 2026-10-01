@@ -1,6 +1,6 @@
 # Project Memory
 
-Last updated: 2026-09-29
+Last updated: 2026-10-01
 
 Piik is private, low-latency screen sharing for one Host and up to 20
 authenticated friends. The current product surface is Web Host, Web Viewer, and
@@ -43,7 +43,8 @@ blank keeps the self-contained site open.
 ## Product Map
 
 - [Rooms and access](./standards/rooms-access.md) owns room codes,
-  invitations, code entry, credentials, and lightweight/SQLite persistence.
+  invitations, code entry, credentials, room interactions and lightweight/SQLite
+  persistence.
 - [Routing and transport](./standards/routing-transport.md) owns P2P-first
   distribution, endpoint capacity, SFU fallback, recovery, and privacy limits.
 - [Capture and media quality](./standards/media-quality.md) owns Browser capture,
@@ -70,8 +71,9 @@ implementation and routine UI detail.
   available, and anonymous provenance distinguishes ordinary from predicted
   selected paths. The configuration default remains stock ICE. The only
   application fallback is one bounded embedded SFU/UDP
-  publication; Piik configures no TURN or TCP media route. A pre-share
-  peer-only policy can exclude that SFU suffix for one share generation.
+  publication; Piik configures no TURN or TCP media route. Hosted operators may
+  require SFU-only media through the same controller. On P2P-first sites, a
+  pre-share peer-only policy can exclude that SFU suffix for one share generation.
 - Every endpoint shares one steady outbound-copy cap, default `2` and limited to
   `1..3`. One room controller owns one committed graph, one reconcile loop, and
   one serial child operation. First decoded frame commits availability work;

@@ -24,6 +24,15 @@ room identity, current state, roster, and one manual media-reconnect action.
 Controls and text must remain usable without overlap or horizontal overflow on
 desktop and mobile viewports.
 
+A capable, opted-in authenticated room session
+outlives its current publication. Stopping capture retires media, not chat;
+restoring an existing room joins it without starting capture. Entering the page
+alone does not create a room. Room close, lost authority and page teardown still
+retire the session. Connected Viewers may keep interacting while the Host page
+is absent, provided the room service and their admitted sessions remain available.
+[Rooms and access](./rooms-access.md#room-interactions) owns interaction authority
+and retention; [status](../status.md#accepted-interaction-phase) owns release readiness.
+
 Piik App opens this same application in the system Browser. Its small
 startup surface selects Local, temporary public invitation, or a configured
 Site before entering the Host workspace. Viewer links opened at that activated

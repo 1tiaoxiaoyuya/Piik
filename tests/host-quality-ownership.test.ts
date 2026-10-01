@@ -23,8 +23,9 @@ const owners = new Set(["changeQuality", "commitQuality", "handleSignalMessage",
   "acquireNativeClient", "requestSharing", "startNativeShare", "startBrowserNativeIngress",
   "ownNativeClient", "discardNativeClient", "releaseUnusedNativeClient", "closeCaptureSourcePicker",
   "openCaptureSourcePicker", "startBrowserShareFromPicker", "startNativeShareFromPicker",
-  "startSharing", "beginRoomMutation", "finishRoomMutation", "setCaptureError", "changeMicrophone", "toggleSharingPause",
+  "startSharing", "connectRoomSignal", "createReplacementRoom", "beginRoomMutation", "finishRoomMutation", "setCaptureError", "changeMicrophone", "toggleSharingPause",
   "startPeer", "reconcileHostChildren", "setNotice", "setNoticeKey", "setNoticeError", "setNoticeErrorKey", "endSharing", "copyRoomLink", "isCurrentRoomAuthority"]);
+
 const functions: string[] = [];
 function collect(node: ts.Node): void {
   if (ts.isFunctionDeclaration(node) && node.name && owners.has(node.name.text)) {
@@ -69,7 +70,8 @@ function fixture(launchedByClient = true) {
   const route = { updateProfile: vi.fn(async () => true), resyncAuthoritative: vi.fn(async (): Promise<void> => undefined) };
   const state = {
     debugError, debugEvent, debugOperation, NativeCompatibilityError, NativeMediaBridgeError, isCapturePermissionFailure, DOMException,
-    launchedByClient, NativeClient: { connect: vi.fn(async (): Promise<typeof client | null> => null) },
+    launchedByClient, hostRoomSessionAvailable: false,
+    NativeClient: { connect: vi.fn(async (): Promise<typeof client | null> => null) },
     nativeClientConnectRef: ref<Promise<typeof client | null> | null>(null),
     ownNativeClient: vi.fn(), setJoiningRoom: vi.fn(), startSharing: vi.fn(), openCaptureSourcePicker: vi.fn(),
     videoCodecRef: ref({ primary: "h264" }),
@@ -79,8 +81,10 @@ function fixture(launchedByClient = true) {
     nativeSourceRequestRef: ref<object | null>(null), nativeSourcePathRef: ref<unknown>(null),
     setNativeSources: vi.fn(), setShowCaptureBorder: vi.fn(), defaultNativeCapturePath: () => ({ adapterIndex: 0, encoderIndex: 0 }),
     roomMutationRef: ref<object | null>(null), setRoomMutation: vi.fn(),
-    generationRef: ref(0), shareGenerationRef: ref<string | null>("share"), createOpaqueId: () => "share",
+    generationRef: ref(0), shareGenerationRef: ref<string | null>("share"),
+    serverShareGenerationRef: ref<string | null>("share"), createOpaqueId: () => "share",
     setCopiedRoomLink: vi.fn(), setPhase: vi.fn(), roomInitializationRef: ref(Promise.resolve()), roomRef: ref(null),
+
     createRoom: vi.fn(async () => { throw new Error("must not create an empty room"); }),
     readPreferredRoomId: () => null, disposeResources: vi.fn(), ApiError: class extends Error {},
     NativeMediaBridge: vi.fn(function () { return bridge; }), manualVideoCodecPreference: vi.fn(),
@@ -88,6 +92,7 @@ function fixture(launchedByClient = true) {
     qualityChangeRef: ref<object | null>(null), pendingQualityChangeRef: ref<QualitySettings | null>(null),
     activeGenerationRef: ref<number | null>(1), streamRef: ref<typeof stream | null>(stream), sourceSwitchRef: ref<object | null>(null),
     nativeSourceAudioRef: ref<boolean | undefined>(undefined), setMicrophoneEnabled: vi.fn(),
+    nativeAudioSelectionRef: ref<{ enabled: boolean; exclude?: unknown } | null>(null),
     nativeModeRef: ref(false), nativeClientRef: ref<typeof client | null>(client), nativeShareGenerationRef: ref<string | null>("share"),
     hostAudioRef: ref<{ sourceStream: MediaStream } | null>(null),
     nativeMediaIngressRef: ref<ReturnType<typeof ingress> | null>(null), nativeMediaBridgeRef: ref(null),
@@ -140,7 +145,7 @@ function fixture(launchedByClient = true) {
     startOptionalIngress: () => context.startBrowserNativeIngress(1, "share", stream) as Promise<void>,
     change: context.changeQuality as (profile: QualitySettings) => Promise<void>,
     reauthenticate: () => context.handleSignalMessage({ type: "authenticated", role: "host", qualitySettings: original,
-      routePolicy: {}, routeRevision: 1, endpointMediaCopyCapacity: 2 }, 1, { roomId: "room" }, true, null),
+      routePolicy: {}, routeRevision: 1, endpointMediaCopyCapacity: 2 }, 1, true, null),
     switchSource: () => context.switchNativeSource(client, {}, false, {}),
   };
 }
@@ -193,8 +198,83 @@ describe("Camera replacement ownership", () => {
   });
 });
 
+describe("Host room ownership", () => {
+  function roomFixture() {
+    const current = fixture();
+    const room = { roomId: "1234", hostToken: "host-token", canonicalUrl: "https://example.test/r/1234", codeEntryPolicy: "open", inviteUrl: null };
+    const signals: Signal[] = [];
+    class Signal {
+      interactions = {};
+      stop = vi.fn();
+      constructor(public identity: { roomId: string; token: string; roomOnly?: true; shareGeneration?: string },
+        public events: { onMessage(message: unknown): void }) { signals.push(this); }
+      ownsHostRoom(roomId: string, token: string) { return this.identity.roomId === roomId && this.identity.token === token; }
+      wantsHostPublication(generation: string) { return this.identity.shareGeneration === generation && this.identity.roomOnly !== true; }
+    }
+    const forgetRoom = vi.fn(() => { Object.assign(current.roomRef, { current: null }); return true; });
+    Object.assign(current.roomRef, { current: room });
+    Object.assign(current.signalRef, { current: null });
+    current.generationRef.current = 1;
+    Object.assign(current.context, {
+      SignalingClient: Signal, hostRoomSessionAvailable: true, roomInteractionsAvailable: true,
+      connectionAttemptProgress4:true,
+      visRef: ref(false), hostClientIdRef: ref(null), displayNameRef: ref("Host"),
+      getStableClientId: () => "host-client", defaultHostDisplayName: () => "Host", readDisplayName: () => "Host",
+      setDisplayName: vi.fn(), setDisplayNameDraft: vi.fn(), setDisplayNameError: vi.fn(),
+      setInteractionSession: vi.fn(), setSignalStatus: vi.fn(), forgetRoom,
+      hostServerErrorNotice: (code: string) => code,
+    });
+    return { ...current, room, signals, forgetRoom, connect: (value = room) => current.context.connectRoomSignal(value) as Signal };
+  }
+
+  it("restores one room-only connection without creating a publication", () => {
+    const current = roomFixture();
+    current.activeGenerationRef.current = null;
+    current.shareGenerationRef.current = null;
+    const signal = current.connect();
+    expect(signal.identity).toMatchObject({ roomId: "1234", roomOnly: true, roomSession: true });
+    expect(signal.identity.shareGeneration).toBeUndefined();
+    expect(current.connect()).toBe(signal);
+    expect(current.signals).toHaveLength(1);
+  });
+
+  it("does not mistake capture permission in progress for publication intent", () => {
+    const current = roomFixture();
+    const signal = current.connect();
+    signal.events.onMessage({ type: "error", code: "INVALID_TOKEN" });
+    expect(current.forgetRoom).toHaveBeenCalledWith(current.room);
+    expect(current.createRoom).not.toHaveBeenCalled();
+    expect(current.disposeResources).not.toHaveBeenCalled();
+    expect(current.activeGenerationRef.current).toBe(1);
+    expect(current.setPhase).not.toHaveBeenCalled();
+  });
+
+  it("checks the existing connection's authority before reusing it", () => {
+    const current = roomFixture();
+    const original = current.connect();
+    const replacement = { ...current.room, roomId: "5678", hostToken: "new-token" };
+    Object.assign(current.roomRef, { current: replacement });
+    const next = current.connect(replacement);
+    expect(original.stop).toHaveBeenCalledOnce();
+    expect(next).not.toBe(original);
+    expect(next.identity.roomId).toBe("5678");
+  });
+
+  it("retires only the matching rejected publication without sending an invalid stop", () => {
+    const current = roomFixture();
+    const signal = current.connect();
+    signal.events.onMessage({ type: "sharing-start-failed", shareGeneration: "obsolete", code: "SERVER_ERROR" });
+    expect(current.disposeResources).not.toHaveBeenCalled();
+    signal.events.onMessage({ type: "sharing-start-failed", shareGeneration: "share", code: "SERVER_ERROR" });
+    expect(current.disposeResources).toHaveBeenCalledExactlyOnceWith(false, true);
+    expect(current.activeGenerationRef.current).toBeNull();
+    expect(signal.stop).not.toHaveBeenCalled();
+  });
+});
+
 describe("Host room-link copy feedback", () => {
   function copyFixture(includeInviteCredential = true) {
+
     const current = fixture();
     let copiedUrl: string | null = null;
     let notice: unknown = null;
@@ -344,7 +424,7 @@ describe("Host quality ownership", () => {
     expect(current.setShowCaptureBorder).toHaveBeenCalledWith(true);
     if (replacing) {
       await vi.waitFor(() => expect(current.client.replaceShareSource).toHaveBeenCalledWith(
-        "share", target, false, { adapterIndex: 0, encoderIndex: 0 }, true,
+        "share", target, false, { adapterIndex: 0, encoderIndex: 0 }, true, undefined,
       ));
     } else {
       const selection = current.startSharing.mock.calls[0]![0];
@@ -353,6 +433,25 @@ describe("Host quality ownership", () => {
       await expect(current.context.startNativeShare(1, "share", selection)).rejects.toThrow("capture unavailable");
       expect(current.client.startShare).toHaveBeenCalledWith(expect.objectContaining({ showCaptureBorder: true }));
     }
+  });
+
+  it("retains exclusion intent across audio off/on and a failed replacement until share retirement", async () => {
+    const current = fixture();
+    current.nativeModeRef.current = true;
+    const target = { kind: "display", sourceId: "2", title: "Display" };
+    const excluded = { kind: "window", sourceId: "3", pid: 123, creationTime: "456", title: "Voice fixture" };
+    const path = { adapterIndex: 0, encoderIndex: 0 };
+    for (const enabled of [true, false, true]) {
+      await current.context.switchNativeSource(current.client, target, enabled, path, false, excluded);
+      expect(current.nativeAudioSelectionRef.current).toEqual({ enabled, exclude: excluded });
+      expect(current.client.replaceShareSource).toHaveBeenLastCalledWith("share", target, enabled, path, false, enabled ? excluded : undefined);
+    }
+    const next = { ...excluded, pid: 321, creationTime: "654" };
+    current.client.replaceShareSource.mockRejectedValueOnce(new Error("audio unavailable"));
+    await current.context.switchNativeSource(current.client, target, true, path, false, next);
+    expect(current.nativeAudioSelectionRef.current).toEqual({ enabled: true, exclude: next });
+    current.disposeNative();
+    expect(current.nativeAudioSelectionRef.current).toBeNull();
   });
 
   it.each(["browser", "native"] as const)("keeps the %s selection until room work permits capture", async (kind) => {

@@ -16,6 +16,7 @@ func TestRuntimeCapabilities(t *testing.T) {
 		{`{}`, RuntimeCapabilities{}},
 		{`{"connectionAttemptProgress4":true}`, RuntimeCapabilities{ConnectionAttemptProgress4: true}},
 		{`{"sfu":true,"extra":{"enabled":true}}`, RuntimeCapabilities{Sfu: true}},
+		{`{"sfu":true,"sfuOnly":true}`, RuntimeCapabilities{Sfu: true, SfuOnly: true}},
 		{`{"natPrediction":true,"SFU":true}`, RuntimeCapabilities{NatPrediction: true}},
 		{`{"sfu":true,"natPrediction":true}`, RuntimeCapabilities{Sfu: true, NatPrediction: true}},
 		{`{"sfu":"ignored duplicate","sfu":true}`, RuntimeCapabilities{Sfu: true}},
@@ -26,7 +27,7 @@ func TestRuntimeCapabilities(t *testing.T) {
 		}
 	}
 	for _, data := range []string{
-		`null`, `[]`, `true`, `{"sfu":null}`, `{"sfu":"true"}`,
+		`null`, `[]`, `true`, `{"sfu":null}`, `{"sfu":"true"}`, `{"sfuOnly":null}`, `{"sfuOnly":"true"}`,
 		`{"natPrediction":null}`, `{"natPrediction":1}`,
 		`{"connectionAttemptProgress4":null}`, `{"connectionAttemptProgress4":4}`,
 	} {
@@ -695,6 +696,44 @@ func TestAuthenticateAppliesTheRoutePolicyDefault(t *testing.T) {
 	}
 	if host.RoutePolicy != DefaultRoutePolicy {
 		t.Fatalf("routePolicy = %+v, want %+v", host.RoutePolicy, DefaultRoutePolicy)
+	}
+}
+
+func TestAuthenticateAcceptsPersistentRoomSessionOptIn(t *testing.T) {
+	message, err := DecodeClientMessage([]byte(
+		`{"type":"authenticate","protocol":"piik-v23","roomId":"1234","role":"host",` +
+			`"token":"` + repeat("a", 43) + `","clientId":"client_12345678","roomSession":true,"roomOnly":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, ok := message.(AuthenticateHostMessage)
+	if !ok || !host.RoomSession || !host.RoomOnly {
+		t.Fatalf("decoded %#v, want room-session opt-in and room-only state", message)
+	}
+	if _, err := DecodeClientMessage([]byte(
+		`{"type":"authenticate","protocol":"piik-v23","roomId":"1234","role":"host",` +
+			`"token":"` + repeat("a", 43) + `","clientId":"client_12345678","roomOnly":true}`)); err == nil {
+		t.Fatal("accepted roomOnly without roomSession opt-in")
+	}
+}
+
+func TestStartSharingRequiresAnOpaqueGenerationAndRoutePolicy(t *testing.T) {
+	message, err := DecodeClientMessage([]byte(
+		`{"type":"start-sharing","shareGeneration":"share_12345678",` +
+			`"routePolicy":{"peerOnly":true,"topologyOptimization":false,"natPrediction":false}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := message.(StartSharingMessage); !ok {
+		t.Fatalf("decoded %#v, want StartSharingMessage", message)
+	}
+	for _, raw := range []string{
+		`{"type":"start-sharing","shareGeneration":"short","routePolicy":{"peerOnly":true,"topologyOptimization":false,"natPrediction":false}}`,
+		`{"type":"start-sharing","shareGeneration":"share_12345678"}`,
+	} {
+		if _, err := DecodeClientMessage([]byte(raw)); err == nil {
+			t.Errorf("accepted invalid start-sharing message %s", raw)
+		}
 	}
 }
 

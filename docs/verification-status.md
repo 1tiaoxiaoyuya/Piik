@@ -1,6 +1,6 @@
 # Verification Status
 
-Last updated: 2026-09-17
+Last updated: 2026-10-01
 
 This file owns physical evidence limits that change how the product may be
 described. [Status](./status.md) owns the execution/deployment index.
@@ -46,6 +46,26 @@ is required to close this phase. Investigate further only from a new failure
 or a measured improvement worth its implementation and maintenance cost.
 
 ## Candidate Evidence Boundary
+
+The Windows HDR-to-SDR candidate has synthetic FP16 conversion and decoded
+H.264/VP8 Browser reception evidence. Local displays were in SDR mode; real HDR
+content, SDR white on HDR displays, mixed-display movement, display-mode changes
+and sustained GPU contention still require physical acceptance. The
+[fidelity assessment](./research/media-fidelity.md#hdr-to-sdr) owns measurements.
+These checks do not establish Browser-capture HDR behavior or end-to-end HDR.
+
+Windows source-audio exclusion has bounded parent/child tone-isolation and
+target-exit evidence. It does not establish coverage of arbitrary process trees
+or real voice applications across playback devices. The
+[audio assessment](./research/native-client-media.md#windows-audio-exclusion)
+owns that distinction.
+
+Room interactions have multi-page Browser evidence for stop/resume, idle-room
+join, Host departure/return, reconnect, invitation revocation and event timing.
+Responsive Browser checks cover narrow portrait and landscape layouts, but not
+real phone keyboards, Safari behavior or every touch/device combination. The
+owner accepted this bounded UI/model walkthrough for phase closure; these
+physical limits remain open and are not release authorization.
 
 The 2026-09-11 functional test acceptance used two genuine Windows App packages
 and matching Server source/Web builds under the same private contract. Both App/Site version

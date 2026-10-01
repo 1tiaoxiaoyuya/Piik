@@ -1,13 +1,21 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Btn, Chip, NameTag, Pill, SwitchItem } from "../components/living/primitives";
 import { RoomChip, RoomAdmissionBadge } from "../components/living/RoomChip";
 import { CaptureSourcePicker, type NativeSourceList } from "../components/living/CaptureSourcePicker";
 import { LedStrip } from "../components/living/Header";
 import { StageTv } from "../components/living/Stage";
 import { HostMicrophone, HostMicrophoneSettings } from "../components/living/HostMicrophone";
+import { RoomInteractions } from "../components/living/RoomInteractions";
+import { RoomChatOverlay, RoomChatToggle } from "../components/living/RoomChatOverlay";
+import { RoomInteractionSession } from "../lib/room-interactions";
+import { createOpaqueId } from "../lib/opaque-id";
+import type { InteractionPayload } from "../../shared/protocol";
+import { REACTION_IDS, type ReactionId } from "../../shared/room-interactions";
 import { PlaybackControls } from "../components/living/PlaybackControls";
 import { SharingSettings } from "../components/living/SharingSettings";
 import { LauncherForm, type AppMode } from "../components/living/LauncherForm";
+import { useTheaterMode } from "../components/living/use-theater-mode";
+
 import { QualityPresets } from "../components/living/QualityPresets";
 import { RoomCodeInput } from "../components/living/RoomCodeInput";
 import type { QualityProfileId } from "../media/quality";
@@ -21,9 +29,10 @@ import { PeoplePreview } from "./PeoplePreview";
 import "./controls-preview.css";
 
 const POSTER = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360"><rect width="640" height="360" fill="#e8eee6"/><rect x="100" y="60" width="440" height="240" rx="20" fill="#fffdf6"/><path d="M100 100h440" stroke="#c9d7cf" stroke-width="2"/><circle cx="128" cy="81" r="6" fill="#ed9e65"/><circle cx="320" cy="190" r="46" fill="#65b099"/><path d="m310 191 9 9 16-22" fill="none" stroke="#fffdf6" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/></svg>')}`;
-const SOURCES = { kind: "ready", processAudio: true, systemAudio: true, captureBorderControl: true, sources: [
+const SOURCES = { kind: "ready", processAudio: true, systemAudio: true, processAudioExclusion: true, captureBorderControl: true, sources: [
   { kind: "window", sourceId: "101", pid: 1, creationTime: "1", title: "Sketchbook" },
   { kind: "window", sourceId: "102", pid: 2, creationTime: "2", title: "A short film" },
+  { kind: "window", sourceId: "104", pid: 3, creationTime: "3", title: "Voice call" },
   { kind: "display", sourceId: "103", title: "Display 1" },
 ] } satisfies NativeSourceList;
 const previewSource = async () => POSTER;
@@ -36,6 +45,7 @@ const previewMicrophones = async () => [{ id: "headset", label: "USB Headset" },
 export function ControlsPreview() {
   const { t, lang, vis } = useCopy();
   const en = lang === "en";
+  const displayPreview = new URLSearchParams(window.location.search).get("source") === "display";
   const [sound, setSound] = useState(true);
   const [microphone, setMicrophone] = useState(false);
   const [microphoneVolume, setMicrophoneVolume] = useState(1);
@@ -54,7 +64,7 @@ export function ControlsPreview() {
   const [passwordVisible, setPasswordVisible] = useState(false);
   const [name, setName] = useState("Piik friend");
   const [invalid, setInvalid] = useState(false);
-  const [sourceOpen, setSourceOpen] = useState(false);
+  const [sourceOpen, setSourceOpen] = useState(displayPreview);
   const [sourceState, setSourceState] = useState<NativeSourceList["kind"] | "empty">("ready");
   const [captureBorderAvailable, setCaptureBorderAvailable] = useState(true);
   const [showCaptureBorder, setShowCaptureBorder] = useState(false);
@@ -92,6 +102,7 @@ export function ControlsPreview() {
             hint={paused ? "hint-resume" : "hint-pause"} onClick={() => setPaused(!paused)} />
           <Btn icon="switchSource" title="host.switchSource" cap="host.switchSource" hint="hint-switch-source" onClick={notify} />
           <Btn icon="sliders" cap="host.settings.button" title={sharingSettings ? "host.advanced.hide" : "host.advanced"}
+
             hint={sharingSettings ? "hint-collapse" : "hint-advanced"} tone={sharingSettings ? "on" : undefined}
             expanded={sharingSettings} controls="preview-sharing-settings" onClick={() => setSharingSettings(value => !value)} />
           <Btn id="host-stop-share" icon="stop" tone="danger" title="host.stop" cap="host.stop" hint="hint-share-stop" onClick={notify} />
@@ -108,6 +119,8 @@ export function ControlsPreview() {
           <SwitchItem checked={sound} onChange={setSound} label={t("host.sourcePicker.audioOn")} hint="hint-share-audio" />
           <SwitchItem checked disabled locked onChange={() => undefined} label={t("host.advanced.route.peerOnly")}
             note={t("host.advanced.route.peerOnlyRequired")} hint="hint-route-p2p-required" />
+          <SwitchItem checked disabled locked onChange={() => undefined} label={t("host.advanced.route.sfuOnly")}
+            note={t("host.advanced.route.sfuOnlyHint")} hint="hint-route-sfu" />
         </div>
         <div className="cp-tools">
           <span className="lr-toggle" role="group" aria-label={t("host.policy")} data-selected={policy}>
@@ -181,12 +194,16 @@ export function ControlsPreview() {
         {en ? ["Available", "Loading", "App unavailable", "Update needed", "Capture unavailable", "Read failed", "Empty list"][index] : ["正常", "读取中", "App 未连接", "需要更新", "无法采集", "读取失败", "空列表"][index]}</Chip>)}
         <SwitchItem checked={captureBorderAvailable} onChange={setCaptureBorderAvailable}
           label={en ? "Windows border control" : "Windows 边框控制"} />
+        <a className="lr-btn" href="/__tooltip-preview?source=display#source-preview" onClick={() => setSourceOpen(true)}>
+          <Glyph name="speakerOff" size={18} />{t("host.sourcePicker.excludeAudio")}
+        </a>
       </div>
       <div className="cp-stage"><StageTv hasEntry label={t("host.sourcePicker.title")}>
         <img className="cp-poster" src={POSTER} alt="" />
         {sourceOpen ? <CaptureSourcePicker nativeSources={sourceState === "empty" ? { ...SOURCES, sources: [], captureBorderControl: captureBorderAvailable }
           : sourceState === "ready" ? { ...SOURCES, captureBorderControl: captureBorderAvailable } : { kind: sourceState }}
           initialShowCaptureBorder={showCaptureBorder}
+          initialTab={displayPreview ? "display" : "window"}
           onBrowser={() => { setSourceOpen(false); notify(); }}
           onCamera={() => { setSourceOpen(false); notify(); }}
           loadCameras={previewCameras}
@@ -217,5 +234,70 @@ export function ControlsPreview() {
           onSubmit={event => event.preventDefault()} />
       </div>
     </section>
+    <section id="interaction-preview" className="cp-section">
+      <header className="cp-section-head"><span className="cp-number">09</span><div><h2>{en ? "A little company" : "聊两句，丢个番茄。"}</h2>
+        <p>{en ? "Click a person for reactions. Drag or resize either window." : "点小人发表情；聊天与表情窗都能拖动、缩放。"}</p></div></header>
+      <InteractionControlsPreview />
+    </section>
   </>;
+}
+
+function InteractionControlsPreview() {
+  const [session, setSession] = useState<RoomInteractionSession | null>(null);
+  const [viewer, setViewer] = useState(false);
+  const [crowded, setCrowded] = useState(false);
+  const [reaction, setReaction] = useState<ReactionId>("heart");
+  const [theater, setTheater] = useTheaterMode();
+  const video = useRef<HTMLVideoElement>(null);
+  const { t, lang } = useCopy();
+  useEffect(() => {
+    const sender = viewer
+      ? { peerId: "preview-friend", role: "viewer" as const, displayName: "Piik friend" }
+      : { peerId: "preview-host", role: "host" as const, displayName: "Piik" };
+    const model = new RoomInteractionSession(message => {
+      queueMicrotask(() => {
+        if (message.type === "subscribe-room-interactions") model.receive({ type: "room-interactions-ready", serverTime: Date.now() });
+        if (message.type === "send-room-interaction") model.receive({ type: "room-interaction", id: createOpaqueId(),
+          requestId: message.requestId, occurredAt: Date.now(), sender, payload: message.payload });
+      });
+      return true;
+    });
+    model.authenticated(sender.peerId);
+    setSession(model);
+    return () => model.close();
+  }, [viewer]);
+  const receiveSample = (payload: InteractionPayload) => session?.receive({
+    type: "room-interaction", id: createOpaqueId(), requestId: createOpaqueId(), occurredAt: Date.now(),
+    sender: viewer ? { peerId: "preview-host", role: "host", displayName: "Piik" }
+      : { peerId: "preview-friend", role: "viewer", displayName: "Piik friend" }, payload,
+  });
+  return <><div className="cp-tools">
+    <SwitchItem checked={viewer} onChange={setViewer} label={lang === "en" ? "Viewer perspective" : "观众视角"} />
+    <SwitchItem checked={crowded} onChange={setCrowded} label={lang === "en" ? "20 viewers" : "20 位观众"} />
+    <button type="button" className="lr-btn" onClick={() => receiveSample({
+      kind: "chat", text: lang === "en" ? "I'm here. Save me a seat!" : "来了，给我留个位置！",
+    })}><Glyph name="chat" size={18} />{lang === "en" ? "Receive a sample message" : "模拟收到消息"}</button>
+    <label className="lr-input cp-reaction-select"><span>{lang === "en" ? "Reaction" : "表情"}</span>
+      <select value={reaction} onChange={event => setReaction(event.target.value as ReactionId)}>
+        {REACTION_IDS.map(id => <option key={id} value={id}>{t(`interaction.reaction.${id}`)}</option>)}
+      </select>
+    </label>
+    <button type="button" className="lr-btn" onClick={() => receiveSample({ kind: "reaction", reaction,
+      targetPeerId: viewer ? "preview-friend" : "preview-host",
+    })}><Glyph name="smile" size={18} />{lang === "en" ? "Receive a reaction" : "模拟收到表情"}</button>
+  </div><div className={theater ? "lr-room is-theater" : "cp-interaction-room"}><div className="lr-scene">
+  <StageTv label={t("interaction.title")}>
+    <video ref={video} poster={POSTER} playsInline />
+    <RoomChatOverlay session={session} visible />
+    <PlaybackControls videoRef={video} stream={null} canPlay={false} onPlay={() => {}}
+      theaterMode={theater} onToggleTheater={() => setTheater(value => !value)} onReconnect={() => {}} reconnectAvailable={false}
+      extraActions={<RoomChatToggle session={session} />} />
+  </StageTv><RoomInteractions session={session}
+    view={viewer ? "viewer" : "host"} host={{ key: "preview-host", name: "Piik", you: !viewer }} entries={
+      Array.from({ length: crowded ? 20 : 1 }, (_, index) => ({
+        key: index ? `preview-friend-${index}` : "preview-friend", name: index ? `Friend ${index + 1}` : "Piik friend",
+        you: viewer && index === 0,
+        status: deriveParticipantStatus({ upstream: { kind: "peer", peerId: "preview-host" }, mediaReady: true }, true),
+      }))
+    } /></div></div></>;
 }

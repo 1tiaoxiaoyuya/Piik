@@ -1,70 +1,58 @@
 # Current TODO Ledger
 
-Last reviewed: 2026-09-30
+Last reviewed: 2026-10-02
 
 Only **Now** is executable. Product modules own behavior; Git/PRs own completed
 history. A parked idea is not implementation authority.
 
 ## Now
 
-- [ ] **Published-product bug and experience acceptance.** Prioritize share
-  startup, audio/source changes, sustained viewing, recovery and retirement,
-  admission, and narrow/touch UI. Verify confirmed fixes through the existing
-  owners before resuming feature polish. Keep field reports without matched
-  evidence separate from locally reproduced defects.
-- [ ] **Sustained Browser degradation.** The H264 field cause remains open.
+- [ ] **Authorized release delivery.** The owner accepted the room-interaction
+  phase, complete bilingual release notes and bounded acceptance, and authorized
+  v1.7.0 publication. Follow
+  [the integration workflow](../CONTRIBUTING.md#full-integration-and-release-workflow)
+  for one squash merge, packaging, publication and scoped postflight. Release
+  artifacts and operator records own completion; do not add a release-record
+  commit. No implementation work remains open for this phase.
+
+## Held By Owner
+
+- [ ] **Browser-internal encoder work.** Paused by the owner on 2026-10-01.
   [Comparisons and Chromium traces](./research/browser-local-encoding-pool.md#sustained-h264-recovery)
-  distinguish encoder recovery hysteresis from a tab-capture feedback/size-step
-  lock reproduced in bare WebRTC. Verify the upstream soft-target/hard-maximum
-  repair candidate against a patched Browser, which remains unbuilt. The Piik
-  sender boundary now isolates display frames while preserving native idle refresh,
-  capture intent and operation retirement. Real hidden-tab SFU checks pass;
-  broader device/background coverage remains. Native logs confirm content-driven
-  QP hysteresis and a cost from bitrate reconfiguration, but not repeated brief
-  blur. Match field Host/Viewer evidence
-  before assigning the field cause or declaring repeated brief blur fixed.
-  Retain existing clone/startup protections and candidate proof; no periodic
-  reset or quality floor. A recent Piik regression is not established.
+  own the evidence for synchronous H264 initialization, native adaptation and
+  the unbuilt upstream repair candidate. Keep the verified Piik budget and
+  handoff repairs; do not add periodic resets, a quality floor or a Browser fork.
+  The field room's cause and all brief blur are not established as resolved.
 
 ## Deferred Feature Work
 
-Feature design and interaction polish are paused while the bug/experience phase
-is active. Retain these decisions for resumption, not as parallel work.
+These proposals remain deferred beyond the accepted interaction phase.
 
 - [ ] **Passive App attachment: design hold.** Site mode authorizes one selected
   origin and supplies native media without starting a local room server. A
   passive replacement needs an accepted site-consent/discovery flow; it must not
   admit arbitrary sites or add another runtime owner. Keep Site mode until that
   decision; removal of the Demo prefill does not authorize changing site trust.
-- [ ] **Refine the isolated room-interaction prototype.** Review chat, optional
-  danmaku and participant-targeted reactions for usability, placement and intended
-  cross-view synchronization. Preserve room authorization and media-route owners.
-  Accept its combined layout: sharing settings with the picture, floating chat
-  without page reflow and room actions before diagnostics. Check narrow-screen
-  keyboard avoidance, its theater entry and participant menu on real devices;
-  keep chat available independently of sharing.
-  Retain current room creation: the first share creates a room, an existing room
-  can resume, and stopping media keeps the opted-in interaction session. Do not
-  add visit-triggered creation or a separate pre-share room-creation entry.
-  This experiment does not authorize integration or publication.
-- [ ] **Room voice: design before implementation.** The
-  [voice assessment](./research/room-voice.md) maps current owners, mature options
-  and a staged verification plan. Resolve total voice membership/topology,
-  P2P-only deployment coverage, speaking authority and the Host-commentary
-  compatibility boundary before implementation. Validate source-audio isolation
-  from received speech before exposing simultaneous sharing and voice. Keep
-  room authority, microphone and screen lifetimes distinct; no new room store,
-  screen-tree reversal or automatic mesh/SFU controller is approved.
-- [ ] **Verify media fidelity independently of voice.**
-  Verify actual left/right separation through Browser, Native and SFU paths;
-  receive-side stereo negotiation alone does not establish audible fidelity.
-  Assess HDR capture to correct SDR output for ordinary viewers before full HDR,
-  with issue [#420](https://github.com/TNTcraftHIM/Piik/issues/420) as the reported
-  case. Full HDR and surround sound remain design decisions. These findings do
-  not establish physical device acceptance or authorize a new release.
 
 ## Awaiting Device Or Reporter Evidence
 
+- [ ] **HDR, audio-exclusion and mobile interaction device coverage.** Complete
+  the remaining physical checks in
+  [verification status](./verification-status.md#candidate-evidence-boundary):
+  real HDR/mixed displays under load, real voice-app process trees across playback
+  devices, and phone keyboard/theater/participant-menu interaction. Local GPU,
+  decoded-video, synthetic audio and responsive-browser evidence do not cover
+  those environments. Issues [#420](https://github.com/TNTcraftHIM/Piik/issues/420)
+  (Browser HDR) and [#445](https://github.com/TNTcraftHIM/Piik/issues/445)
+  (Windows 10 colors) still need matched capture evidence; do not assign them
+  the locally reproduced Native conversion defects.
+- [ ] **Native H.264 motion quality (#432).** The original 720p30 H.264/VP8
+  visual comparison remains unresolved. Browser evidence confirms similar
+  delivered bitrate/format and zero reported loss, but contains no matched
+  pictures or bitstream. The reporter withdrew the fixture-contaminated CBR
+  ceiling claim. [Evidence review](./research/native-client-media.md#native-h264-motion-quality)
+  owns that distinction. Reproduce with identical content and unchanged
+  production settings before proposing profile, default-FPS or bitrate changes.
 - [ ] **Self-hosted room creation HTTP 403.** Retest affected deployments using
   the [address checks](./guide/troubleshooting.md#room-creation-returns-403).
   Obtain the configured public address/origin and response details; distinguish
@@ -78,6 +66,9 @@ is active. Retain these decisions for resumption, not as parallel work.
   evidence before calling that an ICE/NAT failure. HTTP 1033 belongs to the
   public-link item below, before media routing. Local fixes and STUN checks do
   not establish these reporters' causes.
+  [#443](https://github.com/TNTcraftHIM/Piik/issues/443)'s Host report reaches Native
+  prepare/answer/candidate processing without a connected remote edge; obtain
+  the same attempt's Viewer and App transport reports to locate the failure.
 - [ ] **Camera and Host microphone device coverage.** The owner accepted the
   sharing layout and authorized release with these physical limits recorded.
   Verify real audio levels/echo, multiple-device replacement and native mixing on
@@ -92,6 +83,9 @@ is active. Retain these decisions for resumption, not as parallel work.
   [runtime evidence](./research/cross-platform-client-runtime.md#public-invitation-startup).
   Demo access failures and public-link HTTP 1033 also remain unconfirmed; check
   connector, DNS/provider and remote access separately from WebRTC availability.
+  [#434](https://github.com/TNTcraftHIM/Piik/issues/434)'s attached log records DNS
+  refusal during Cloudflare edge discovery, before readiness; retrying media
+  cannot repair that resolver failure. Do not assign it to every startup report.
 - [ ] **Interruption during established viewing.** A Viewer reportedly returns
   to P2P connecting after watching for a while. Include
   [#429](https://github.com/TNTcraftHIM/Piik/issues/429)'s reported SFU-to-P2P
@@ -126,6 +120,10 @@ is active. Retain these decisions for resumption, not as parallel work.
   also needs paired evidence; distinguish activation, codec configuration and
   actual output before changing the encoder contract. Local NVIDIA success
   does not settle AMD activation.
+  In [#437](https://github.com/TNTcraftHIM/Piik/issues/437), both manually selected
+  codecs reportedly work; its Browser report records Auto startup returning
+  `operation-failed` after 6.85 seconds, before the request timeout. Obtain the
+  same attempt's App diagnostics to locate selection/activation failure.
 - [ ] **Share ends after entering a game.** Screen sharing reportedly works
   until entering a game freezes the picture, followed seconds later by share
   termination. Version, capture path, codec and matched diagnostics are unknown.
@@ -249,3 +247,7 @@ not establish better connection success or speed; this note adds no retry policy
 11. **Release-operation policy.** Protected release environments, immutable
     draft assets and changing mirror-failure policy remain unaccepted proposals;
     evaluate their benefit before adding release machinery.
+12. **Linux ARM64 Server distribution (#439).** Evaluate archives and container
+    publishing together with deployment names, update links and runtime checks.
+    A cross-compile alone does not establish a supported package. This is a
+    community proposal, not part of the current accepted candidate.

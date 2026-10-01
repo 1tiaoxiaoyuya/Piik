@@ -39,6 +39,17 @@ production behavior and remaining acceptance.
   frame matches its desktop source dimensions. Other frames retain their own
   aspect ratio. This changes only the encoded presentation, never the game or
   display settings; vendor-private scaling is not inferred.
+- Windows SDR conversion owns one output color contract: limited-range BT.601
+  NV12 with matching H.264 metadata. RGB capture and decoded video retain their
+  input range/matrix through conversion and relay scaling; dimensions do not
+  determine color space. Unspecified SDR follows the WebRTC convention.
+- Windows native HDR sources retain scRGB FP16 until platform tone mapping,
+  source-display white-level adjustment and sRGB conversion produce SDR. Live
+  capture and source thumbnails share this owner; conversion precedes output
+  fanout and does not add a media route or per-encoder tone curve. Ordinary SDR
+  keeps its copy path. Source-display color changes refresh capture input,
+  not room authority or transport. [Fidelity evidence](../research/media-fidelity.md)
+  owns platform checks; this is HDR-to-SDR, not end-to-end HDR delivery.
 - Where Windows supports border control, the native source picker offers
   **Show capture border**, off by default. The choice stays in the Host page and
   follows native source and quality changes. Source previews request borderless
@@ -177,12 +188,32 @@ closing a Browser PeerConnection alone does not guarantee that its promises
 settle. Cancellation starts before joining work that depends on it, while a
 replacement still waits for the retired owner's cleanup.
 
+Browser and Native encoder-group admission uses current native demand, not the
+previously applied rate. A new or pending join must not displace an existing
+rate owner by raising or retaining its budget against that owner's demand.
+Revalidate pending admission before planning other memberships.
+
 Eligible Browser P2P parents use the source-owned pool in
 [ADR-0014](../adr/0014-browser-node-local-encoding-pool.md). Compatible direct
 children share one independent local WebRTC producer; incompatible demands
-remain separate. Each outgoing connection keeps native transport, allocation
-and recovery, with a tiny carrier supplying its RTP clock. Producers use
-the existing native video target under Host ceilings. Actual forwarded-frame
+remain separate. Joining another producer must fit the child's native allocation;
+a quiet scene's low byte rate does not prove that producer's rate budget fits.
+Pending separation remains necessary while another compatible member needs a
+higher native budget; quiet output alone cannot cancel it. When that demand
+leaves or the child's budget recovers, the current producer can adapt in place.
+Optional reuse also preserves the healthy current output's rate budget and
+observed quality within Host ceilings through recovery-frame commitment, using
+the actual candidate frame and current output rather than preparation alone.
+Rejected membership retains current delivery and its recovery requests.
+A recovery frame already being written retains its owner until completion,
+including across pause/resume; cancellation belongs to the output that knows
+whether writing has started.
+Each outgoing connection keeps native transport, allocation and recovery, with
+a tiny carrier supplying its RTP clock. Producers use the existing native video
+target under Host ceilings. A new producer seeds its
+local WebRTC start rate from that allocation, without a minimum or a change to
+the outgoing connection's estimate. Subsequent budgets use the existing sender
+parameters; initialization does not add a recovery controller. Actual forwarded-frame
 and producer observations remain distinct from the tiny carrier's statistics.
 Producer startup protection begins at actual outgoing publication, excluding
 local warmup and paused frames. The synthetic carrier uses screen-content
@@ -293,6 +324,17 @@ exists and what is actually delivered.
 A Native audio-process failure does not end healthy video. A later explicit
 source replacement resumes audio through the existing track and encoder owner;
 it does not trigger an automatic capture retry or change room audio topology.
+
+Optional Windows screen-audio exclusion binds one selected process tree to its
+PID and creation time under [ADR-0008](../adr/0008-window-scoped-audio-capture.md).
+The selection lasts for the share, survives source-audio off/on and refresh,
+and is never saved across App runs or rebound by executable name. Changing to a
+window source or explicitly selecting no exclusion clears it. A requested
+exclusion retires previous source audio before replacement preparation; failure
+or target exit leaves source audio silent while healthy video and the Host
+microphone continue. Only an explicit source selection resumes it. A missing
+capability must reject the request, never discard the exclusion. Old pages keep
+their existing audio behavior.
 
 ## Observable Truth
 

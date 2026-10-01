@@ -2,7 +2,8 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$OutputDirectory,
-    [switch]$Check
+    [switch]$Check,
+    [switch]$CheckColor
 )
 
 Set-StrictMode -Version Latest
@@ -34,7 +35,7 @@ $includeFlags = @('', 'third_party\abseil-cpp', 'third_party\boringssl\src\inclu
     '/external:I "{0}"' -f (Join-Path $webrtc.Include $_).TrimEnd('\')
 }
 $compileFlags = '/nologo /c /std:c++20 /EHsc /GR /O2 /W4 /WX /MT /D_ITERATOR_DEBUG_LEVEL=0 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /D_WIN32_WINNT=0x0A00 /DNTDDI_VERSION=0x0A00000A /external:W0 ' + ($includeFlags -join ' ')
-$systemLibraries = 'ole32.lib mmdevapi.lib runtimeobject.lib user32.lib gdi32.lib dwmapi.lib shell32.lib mfplat.lib mf.lib mfuuid.lib d3d11.lib dxgi.lib dxguid.lib evr.lib oleaut32.lib windowsapp.lib winmm.lib ws2_32.lib strmiids.lib crypt32.lib dmoguids.lib iphlpapi.lib msdmo.lib secur32.lib wmcodecdspuuid.lib'
+$systemLibraries = 'ole32.lib mmdevapi.lib runtimeobject.lib user32.lib gdi32.lib dwmapi.lib shell32.lib mfplat.lib mf.lib mfuuid.lib d3d11.lib d2d1.lib dxgi.lib dxguid.lib evr.lib oleaut32.lib windowsapp.lib winmm.lib ws2_32.lib strmiids.lib crypt32.lib dmoguids.lib iphlpapi.lib msdmo.lib secur32.lib wmcodecdspuuid.lib'
 $linkCommand = '"{0}" /nologo /libpath:"{1}"' -f $webrtc.Linker,$webrtc.RuntimeLibraries
 
 function Invoke-CaptureBuild([string]$command) {
@@ -75,5 +76,17 @@ if ($Check) {
         & $executable
         if ($LASTEXITCODE -ne 0) { throw "Capture check failed: $name" }
     }
+}
+if ($CheckColor) {
+    $source = Join-Path $helperDirectory 'frame_converter.probe.cpp'
+    $object = Join-Path $outputPath 'frame_converter.probe.obj'
+    $executable = Join-Path $outputPath 'frame_converter.probe.exe'
+    Invoke-CaptureBuild ('cl.exe {0} "{1}" /Fo:"{2}"' -f $compileFlags,$source,$object)
+    $dependencies = @('process_audio', 'capture_target', 'h264_encoder', 'adaptive_encoder') | ForEach-Object {
+        '"{0}"' -f (Join-Path $outputPath ($_ + '.obj'))
+    }
+    Invoke-CaptureBuild ('{0} /out:"{1}" "{2}" {3} "{4}" {5}' -f $linkCommand,$executable,$object,($dependencies -join ' '),$webrtc.Library,$systemLibraries)
+    & $executable
+    if ($LASTEXITCODE -ne 0) { throw 'Capture color check failed.' }
 }
 Write-Output $executablePath

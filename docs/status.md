@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-10-02
+Last updated: 2026-10-04
 
 This is the compact execution/deployment index. Product modules own behavior,
 [verification status](./verification-status.md) owns unresolved physical limits,
@@ -48,10 +48,19 @@ Windows native capture and thumbnails now share automatic HDR-to-SDR conversion;
 synthetic GPU and Browser reception checks pass, with physical HDR display
 acceptance still pending in [verification status](./verification-status.md).
 Room voice is outside the product plan; Host microphone commentary remains.
-4K remains deferred. The owner accepted the UI/model and bounded local acceptance
-and authorized v1.7.0 publication. Physical device limits remain open.
+These features are published; physical device limits remain open.
 Release artifacts and operator deployment records own delivery completion;
 [TODO](./todo.md#now) owns remaining work.
+
+## Current Candidate
+
+The owner authorized v1.8.0 publication on 2026-10-04. This phase retains the
+published protocols and 1440p ceiling; immutable release artifacts own delivery
+completion. Follow-up work reviews extension boundaries, implements 4K and more
+resolutions with capability negotiation, then develops Native Magicsock NAT
+traversal. The isolated transport experiment is not part of v1.8.0; its product
+integration and connectivity benefit still require verification.
+[TODO](./todo.md#now) owns remaining work and later release authorization.
 
 ## Deployment
 
@@ -87,7 +96,7 @@ and bounded two-build interoperability have acceptance evidence. Accepted
 product changes publish automatically; standalone website and documentation
 changes validate and deploy the website without creating App/Server versions.
 GitHub/Gitee release comparison, mirror publishing and PR-sourced notes follow
-[versioning](./standards/versioning.md). [Verification status](./verification-status.md#candidate-evidence-boundary)
+[versioning](./standards/versioning.md). [Verification status](./verification-status.md#device-evidence-boundary)
 owns the remaining physical limits; shared lessons live in
 [engineering](./standards/engineering.md).
 

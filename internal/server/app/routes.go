@@ -24,6 +24,8 @@ var (
 
 // ServeHTTP dispatches requests and contains handler panics at the HTTP boundary.
 func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	writer.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+	writer.Header().Set("X-Frame-Options", "DENY")
 	recorder := &responseRecorder{ResponseWriter: writer}
 	defer func() {
 		recovered := recover()
@@ -78,7 +80,10 @@ func (s *Server) route(
 		sendJSON(writer, http.StatusOK, protocol.RuntimeCapabilities{
 			ConnectionAttemptProgress4: true,
 			Sfu:                        s.config.SFU != nil,
-			NatPrediction:              s.config.NATPredictionEnabled,
+			SfuOnly:                    s.config.SFU != nil && s.config.SFU.Only,
+			NatPrediction:              s.config.NATPredictionEnabled && !(s.config.SFU != nil && s.config.SFU.Only),
+			RoomInteractions:           true,
+			HostRoomSession:            true,
 		})
 		return
 	}

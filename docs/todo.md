@@ -1,225 +1,206 @@
 # Current TODO Ledger
 
-Last reviewed: 2026-09-27
+Last reviewed: 2026-10-04
 
 Only **Now** is executable. Product modules own behavior; Git/PRs own completed
 history. A parked idea is not implementation authority.
 
 ## Now
 
-- [ ] **Published-product bug and experience acceptance.** Prioritize share
-  startup, audio/source changes, sustained viewing, recovery and retirement,
-  admission, and narrow/touch UI. Verify confirmed fixes through the existing
-  owners before resuming feature polish. Keep field reports without matched
-  evidence separate from locally reproduced defects.
-- [ ] **Complete manual accessible-name review.** Verify the empty video's
-  screen-reader output: Chromium exposes an unavailable-media
-  description despite the literal shared-picture label and no media error. Also
-  review accessible naming on disabled tooltip wrappers and the UI catalogue's
-  paired-character example; automated checks leave those for manual review.
+- [ ] **Publish the accepted v1.8.0 candidate first.** Authorized by the owner
+  on 2026-10-04. Complete final checks and publish through the existing squash
+  PR, packaging, mirror and deployment workflow. Preserve
+  [#449](https://github.com/TNTcraftHIM/Piik/pull/449)'s contributor credit and
+  `Co-authored-by` identity. Reply to resolved issues at publication; retain
+  unmatched field reports below. This release keeps the published protocols
+  and 1440p ceiling; the subsequent media/transport work is separate.
+- [ ] **Resolve the extensibility audit boundaries before freezing 2.0.** Review
+  the media findings in the assessment below together with optional interaction
+  evolution: the current reaction catalog is a strict wire enum, and an unknown
+  reaction or extra event field terminates the Browser signaling session.
+  Current producers do not send those values. Choose bounded capability-gated
+  delivery or a safe presentation fallback before expanding the catalog; preserve
+  strict command and authority validation. No replacement protocol is accepted yet.
+- [ ] **Align native source-list aggregate bounds.** The helper admits up to
+  1024 sources, but `nativecapture.ListSources` reuses the 64 KiB probe-output
+  bound. A synthetic helper with 64 individually valid 512-character window
+  titles returns no list; the 32-source control succeeds. Align enumeration,
+  encoded JSON and loopback response budgets with bounded overflow behavior.
+  This is a confirmed uncommon enumeration failure, not a diagnosis of earlier
+  reporter logs; it does not justify removing byte limits or adding pagination.
+- [ ] **Implement extensible resolution and transport support after v1.8.0.**
+  The owner requested continued repository review, then 4K (#410) and additional
+  resolutions with adaptation and capability negotiation, followed by Magicsock
+  NAT traversal on 2026-10-04. Compare the isolated Go transport
+  with the repaired Pion baseline under the [NAT evidence boundary](#next-p2p-connection-and-feedback-evidence).
+  Evaluate orientation-independent resolution limits, source aspect preservation
+  and negotiated codec capabilities under the
+  [media extension assessment](./research/native-client-media.md#media-capability-extension-assessment).
+  Establish the supported paths, late-join behavior, resource bounds and public
+  compatibility boundary before freezing the production design. Additional
+  codecs still require a concrete format decision. Experiments do not establish
+  a connectivity gain; implementation authority does not authorize publishing
+  the later release.
+
+## Held By Owner
+
+- [ ] **Browser-internal encoder work.** Paused by the owner on 2026-10-01.
+  [Comparisons and Chromium traces](./research/browser-local-encoding-pool.md#sustained-h264-recovery)
+  own the evidence for synchronous H264 initialization, native adaptation and
+  the unbuilt upstream repair candidate. Keep the verified Piik budget and
+  handoff repairs; do not add periodic resets, a quality floor or a Browser fork.
+  The field room's cause and all brief blur are not established as resolved.
+- [ ] **32-bit Windows/Linux Apps.** Deferred by the owner on 2026-10-02;
+  no package or website option is planned. Browser use remains available where
+  the OS/browser supports the required media APIs. Retain the isolated
+  `spike/windows-x86-capture` experiment; revisit its native dependencies,
+  atomic alignment and real 32-bit device coverage only if this work is reopened.
+- [ ] **Windows ARM64 App.** Deferred by the owner on 2026-10-03. Keep Windows
+  App packages and website downloads x64-only until this work is reopened.
 
 ## Deferred Feature Work
 
-Feature design and interaction polish are paused while the bug/experience phase
-is active. Retain these decisions for resumption, not as parallel work.
+These proposals remain deferred beyond the accepted interaction phase.
 
+- [ ] **Phone as a Host microphone: assess after the current work.** Explore an
+  opt-in link that pairs a phone's microphone with the Host's existing audio
+  mixer. Evaluate pairing/revocation, latency/echo, browser background limits
+  and Browser/native input ownership before accepting an implementation. This
+  proposal does not reopen room voice or change the current release scope.
 - [ ] **Passive App attachment: design hold.** Site mode authorizes one selected
   origin and supplies native media without starting a local room server. A
   passive replacement needs an accepted site-consent/discovery flow; it must not
   admit arbitrary sites or add another runtime owner. Keep Site mode until that
   decision; removal of the Demo prefill does not authorize changing site trust.
-- [ ] **Refine the isolated room-interaction prototype.** Review chat, optional
-  danmaku and participant-targeted reactions for usability, placement and intended
-  cross-view synchronization. Preserve room authorization and media-route owners.
-  Accept its combined layout: sharing settings with the picture, floating chat
-  without page reflow and room actions before diagnostics. Check narrow-screen
-  keyboard avoidance, its theater entry and participant menu on real devices;
-  keep chat available independently of sharing.
-  Retain current room creation: the first share creates a room, an existing room
-  can resume, and stopping media keeps the opted-in interaction session. Do not
-  add visit-triggered creation or a separate pre-share room-creation entry.
-  This experiment does not authorize integration or publication.
-- [ ] **Room voice: design before implementation.** The
-  [voice assessment](./research/room-voice.md) maps current owners, mature options
-  and a staged verification plan. Resolve total voice membership/topology,
-  P2P-only deployment coverage, speaking authority and the Host-commentary
-  compatibility boundary before implementation. Validate source-audio isolation
-  from received speech before exposing simultaneous sharing and voice. Keep
-  room authority, microphone and screen lifetimes distinct; no new room store,
-  screen-tree reversal or automatic mesh/SFU controller is approved.
-- [ ] **Verify media fidelity independently of voice.**
-  Verify actual left/right separation through Browser, Native and SFU paths;
-  receive-side stereo negotiation alone does not establish audible fidelity.
-  Assess HDR capture to correct SDR output for ordinary viewers before full HDR,
-  with issue [#420](https://github.com/TNTcraftHIM/Piik/issues/420) as the reported
-  case. Full HDR and surround sound remain design decisions. These findings do
-  not establish physical device acceptance or authorize a new release.
 
 ## Awaiting Device Or Reporter Evidence
 
+These reports remain unmatched. A local repair or successful test is not proof
+of a reporter's cause; research owns the completed experiments and their limits.
+
+- [ ] **macOS and Linux physical capture.** Complete the remaining capture/audio
+  checks in [verification status](./verification-status.md#device-evidence-boundary),
+  including an Intel Mac with a usable hardware H.264 encoder, an ARM64 Linux
+  desktop, and Linux systems beyond the PR author's Hyprland/NVIDIA result.
+- [ ] **Signaling recovery on passwordless sites (#446).** Verify the admission
+  correction against a matched Host/Server attempt; identify the event preceding
+  the handshake failure rather than inferring password denial from `AUTH_REQUIRED`.
+- [ ] **HDR, audio-exclusion and mobile interaction device coverage.** Complete
+  the [physical matrix](./verification-status.md#device-evidence-boundary):
+  HDR/mixed displays, voice-app process trees across playback devices and phone
+  keyboard/theater/participant-menu interaction. Browser HDR
+  [#420](https://github.com/TNTcraftHIM/Piik/issues/420) needs its own capture
+  evidence, separate from Native conversion.
+- [ ] **Native H.264 motion quality (#432).** Obtain matched source/decoded
+  pictures and bitstream for the original 720p30 game comparison. Retain current
+  codec parameters. The [evidence review](./research/native-client-media.md#native-h264-motion-quality)
+  owns the withdrawn CBR claim, Baseline admission repair and Main/High comparison;
+  none establishes this report's cause.
 - [ ] **Self-hosted room creation HTTP 403.** Retest affected deployments using
   the [address checks](./guide/troubleshooting.md#room-creation-returns-403).
-  A stale explicit `ALLOWED_ORIGINS` overrides `PUBLIC_BASE_URL`; the sample now
-  follows the public address and Piik identifies its Origin rejection. Reporter
-  configuration and response details are still absent; distinguish Piik's
-  rejection from a proxy/WAF 403 before assigning their cause.
-- [ ] **No available media route.** A decline is reported since around v1.4;
-  establish comparable attempts on the same endpoints/network before attributing
-  a version regression. Obtain matched Host/Viewer diagnostics from
-  a failed attempt, with version and mode. Inspect candidate exchange, selected
-  paths, first-frame admission and route rejection separately. The Browser
-  candidate-queue rejection defect is repaired and regression-tested; current
-  STUN reachability and route-lifecycle checks do not establish these reporters'
-  causes. HTTP 1033 belongs to the public-link item below, before media routing.
-  A complete v1.6.3 App report confirms four candidate timeouts without Native
-  share-start or any SDP/ICE signaling. Browser diagnostics are needed to
-  locate prepare delivery, peer initialization or the first offer send; these
-  attempts do not establish an ICE/NAT failure. Locally reproduced Browser
-  construction failures now release owned tracks and reach the existing
-  preparation/recovery owner, but are not proved to be this reporter's cause.
-- [ ] **Camera and Host microphone device coverage.** The owner accepted the
-  sharing layout and authorized release with these physical limits recorded.
-  Verify real audio levels/echo, multiple-device replacement and native mixing on
-  target systems, plus phone camera permission, orientation and background use.
-  Keep the existing capture and route owners. The
-  [capture assessment](./research/camera-and-microphone.md) owns behavior and
-  separates bounded Windows/browser checks from untested device combinations.
-- [ ] **App public-invitation startup field acceptance.** Retest the frequent
-  creation-failure report and the earlier
-  [#396 timeout](https://github.com/TNTcraftHIM/Piik/issues/396#issuecomment-5691465700)
-  with the updated App. A controlled UDP-blocked/TCP-available reproduction confirms
-  a dependency configuration defect; the existing tunnel now uses cloudflared's
-  bounded protocol fallback and pre-readiness retries within one startup deadline.
-  [Runtime evidence](./research/cross-platform-client-runtime.md#public-invitation-startup)
-  separates this fix from DNS, provider and remote access failures. The reporting
-  environments still need version and diagnostic evidence before assigning a cause.
-  Demo access failures and public-link HTTP 1033 also remain unconfirmed: current
-  Demo health/assets and an external-host public-link HTTP/WebSocket gate pass.
-  Check connector reachability separately from WebRTC media availability.
-- [ ] **Interruption during established viewing.** A Viewer reportedly returns
-  to P2P connecting after watching for a while. Native receiver renegotiation,
-  retired event delivery and SFU replacement have locally reproduced defects
-  and regression checks, but paired diagnostics and device/network details are
-  still needed to establish this reporter's cause. Include an upstream relay's
-  report when present. Terminal Browser sender failures now notify their existing
-  preparation owner instead of silently disposing; expected retirement stays
-  silent. Native per-output keyframe requests no longer wake unrelated outputs.
-  These are confirmed local defects, not matched causes of the field reports.
-  The existing five-second Viewer membership grace during
-  signaling loss is unchanged. This is distinct from the first-frame report below.
+  Obtain the configured public address/origin and response details; distinguish
+  Piik's rejection from a proxy/WAF 403 before assigning their cause.
+- [ ] **No available media route.** Compare the same endpoints/networks before
+  assigning a regression since v1.4. Obtain paired Host/Viewer/App reports and
+  distinguish route allocation, ICE, first-frame admission and route rejection.
+  [#443](https://github.com/TNTcraftHIM/Piik/issues/443) lacks a connected Native
+  edge and its paired Viewer/App transport report;
+  [#448](https://github.com/TNTcraftHIM/Piik/issues/448) only reaches route allocation.
+  The v1.6.3 candidate-timeout report lacks share-start and SDP/ICE evidence.
+- [ ] **Camera and Host microphone device coverage.** Check real audio levels,
+  echo, device replacement/native mixing and phone camera permission, orientation
+  and background behavior. Include OBS virtual-camera/audio-input sound quality
+  and A/V synchronization. The [capture assessment](./research/camera-and-microphone.md)
+  owns current behavior and the accepted physical limits.
+- [ ] **Public-invitation startup and HTTP 1033.** Obtain version and matched
+  diagnostics for creation failures, Demo access and a stream stalling before
+  reload returns 1033. Distinguish connector recovery/exit, DNS/provider failure
+  and an obsolete link from media routing. Compare
+  [#396](https://github.com/TNTcraftHIM/Piik/issues/396#issuecomment-5691465700) with
+  the [runtime evidence](./research/cross-platform-client-runtime.md#public-invitation-startup).
+  [#434](https://github.com/TNTcraftHIM/Piik/issues/434) establishes DNS refusal
+  during edge discovery, not a cause shared by all startup reports.
+- [ ] **Viewer interruptions.** Obtain paired endpoint/upstream-relay diagnostics
+  for established viewing returning to P2P connecting, including
+  [#429](https://github.com/TNTcraftHIM/Piik/issues/429)'s SFU-to-P2P dropout.
+  Separately retest the v1.5.0 App public-link report where one Viewer drops
+  immediately after connection details appear while others work. Distinguish
+  first-frame admission, signaling grace and current-edge recovery.
 - [ ] **Windows 11 capture border remains visible.** Identify the App/Browser
-  capture path, Windows build and capture-border permission result. Local checks
-  reproduced a border surviving forced process termination; parent cancellation
-  now uses bounded graceful retirement. [Capture evidence](./research/native-client-lifecycle.md#windows-capture-borders)
-  verifies the repair and concurrent-capture behavior on Windows 11. The
-  reporter's cause remains unconfirmed; check consent and other active captures.
-- [ ] **Brief connection followed by repeated Viewer loss on v1.5.0.** One
-  Viewer reportedly drops just after connection details appear, while other
-  Viewers work; App public-link mode is suspected. Check signaling, first-frame
-  admission and current-edge recovery separately. A delayed-confirmation
-  reproduction establishes one premature candidate replacement; the affected
-  environment and paired diagnostics are still unavailable, so the reporting
-  machine's cause remains unconfirmed.
-- [ ] **App discovery and share-start field acceptance.** Retest the missing-window
-  report, an unreachable App despite its process running, and generic share-start
-  failure. Distinguish site authorization, browser permission, control capacity,
-  enumeration and capture startup. The v1.6.5 report reaches Auto-to-VP8 startup
-  after a hardware MFT timeout, then receives Browser `stop-share` before any
-  local-edge request. App handler timestamps are about 1.5 ms apart; this is not
-  a Browser-measured ACK interval or a no-frame deadline. Deliberately exhausting
-  real Chrome connection objects reproduces that sequence with physical capture;
-  bounded normal restarts showed no retained connections. Startup now acquires
-  the Browser connection first: the same exhaustion rejects before capture, and
-  releasing fixture-held objects permits sharing again. This establishes neither
-  a Piik resource leak nor the reporter's cause. The actual Browser exception,
-  loaded asset identity and reporter VP8 output remain unknown. Zero dimensions/
-  FPS in `starting` are valid. Diagnostics preserve preview initialization/
-  negotiation causes and distinguish MFT input/output waits; obtain matched
-  evidence before changing recovery or deadlines. Other discovery/manual-H264
-  reports still need paired evidence.
-- [ ] **Share ends after entering a game.** Screen sharing reportedly works
-  until entering a game freezes the picture, followed seconds later by share
-  termination. Version, capture path, codec and matched diagnostics are unknown.
-  Locate the first capture/output, preview-bridge, control or authority failure;
-  distinguish ordinary source silence/resize from target replacement, exclusive
-  fullscreen, display-mode change and device loss. A reproduced downstream
-  retirement race no longer stops the shared source. Actual CS2 checks found
-  and removed a separate decoded-silence rule that retired a connected Viewer
-  route while the Host stayed live; [capture research](./research/native-client-lifecycle.md#quiet-sources-and-viewer-recovery)
-  distinguishes that repair and successful restoration from the unknown cause
-  of the reported Host termination. Do not conflate source silence, receiver
-  decode interruption and capture-process failure.
-- [ ] **Windows 32-bit candidate acceptance.** Verify the isolated
-  `spike/windows-x86-capture` candidate's launch, capture/audio, memory pressure,
-  source replacement and update links on a 32-bit Windows device. WOW64
-  Host/media checks establish only that environment. Reconcile its scoped
-  SDK/toolchain and atomic-alignment changes with current main when accepted;
-  the experiment is not part of this maintenance release.
+  capture path, Windows build, permission result and other active captures.
+  [Capture evidence](./research/native-client-lifecycle.md#windows-capture-borders)
+  owns the graceful-retirement and concurrent-capture checks.
+- [ ] **App discovery and share-start failures.** Retest missing sources and
+  unreachable App reports across authorization, browser permissions, control
+  capacity, enumeration and startup. For the v1.6.5 Auto-to-VP8 report, obtain
+  the Browser exception/assets and actual VP8 output: Browser `stop-share`
+  precedes any local-edge request and does not prove a no-frame timeout.
+  [#419](https://github.com/TNTcraftHIM/Piik/issues/419)'s AMD manual-H264 failure
+  and [#437](https://github.com/TNTcraftHIM/Piik/issues/437)'s Auto-only failure
+  need the same attempt's App diagnostics. For `input-texture-create / 0x887a0005`,
+  obtain the next candidate/fallback result and final state; a rejected candidate
+  alone is not the share outcome. [Native media research](./research/native-client-media.md#current-boundary)
+  owns the hardware checks and limits.
+- [ ] **Share ends after entering a game.** Obtain version, capture path, codec
+  and paired diagnostics. Locate the first capture/output, preview-bridge,
+  control or authority failure; distinguish source silence from target replacement,
+  display-mode change and device loss. [Capture research](./research/native-client-lifecycle.md#quiet-sources-and-viewer-recovery)
+  owns the quiet-source behavior; an encoder output deadline remains a candidate
+  mechanism, not a diagnosis of this report.
 - [ ] **Windows launcher exit after opening the page.** A user reports that the
   mode-selection page opens, then the App console reports
   `Piik App could not open its launcher: exit status 0xc0000005`.
-  Recheck on the reporting machine after the browser-handoff repair. The Windows
-  URL-handler crash itself still needs the affected build and process/dump
-  evidence; local checks cannot establish its underlying cause.
+  Retest the browser handoff and obtain the affected build and URL-handler
+  process/dump evidence if it still fails.
+- [ ] **System becomes very laggy after starting a share.** Obtain mode, actual
+  codec, profile, display refresh rate and CPU/GPU use, distinguishing startup
+  from sustained lag. Compare saturated GPU/game-FPS impact and multi-output
+  recovery with the [helper-cost checks](./research/native-client-media.md#windows-helper-cost-2026-09-29)
+  before changing allocation or cadence. For Native/SFU stalls, correlate the
+  relevant Go runtime using the [GC attribution boundary](./research/realtime-quality-adaptation.md#go-gc-attribution);
+  no field report currently establishes GC as its cause.
 
 ## Next: P2P Connection And Feedback Evidence
 
-After the current phase, measure connection success, time to first picture and
+For the transport assessment, measure connection success, time to first picture and
 failure causes on representative networks, especially App and P2P-only sites.
-Use existing Debug provenance and selected-path events before adding runtime
-counters. Separate emitted candidates, actual connection attempts, successful
-paths and timeouts; keep observations scoped to connection generations and
-exclude raw endpoints. Establish survey response visibility without treating
-local listener binding as proof of public reachability. The
-[NAT evidence](./research/nat-traversal.md#gateway-and-survey-limits) owns the
-dependency and observation limits. Compare current P2P/SFU handoffs, including
-background P2P attempts behind working SFU media, before choosing changes.
-Preserve one graph and one operation under the
-[routing contract](./standards/routing-transport.md) and
-[ADR-0005](./adr/0005-automatic-hybrid-media-routing.md). Prior ownership audits do
-not establish better connection success or speed; this note adds no retry policy.
+Use existing Debug provenance and selected-path events under the
+[NAT evidence boundaries](./research/nat-traversal.md#gateway-and-survey-limits).
+Separate candidates, attempts, successful paths and timeouts; scope observations
+to connection generations without raw endpoints. Verify survey responses and
+P2P/SFU handoffs, including background direct attempts behind working SFU media.
+The [iroh/Tailscale comparison](./research/nat-traversal.md#iroh-and-tailscale-comparison)
+records the isolated Go media/migration experiment and Browser/relay limits.
+Before adopting magicsock in the product, establish a benefit on matched network
+pairs and define room-authorized peer keys, endpoint exchange, MTU/resource limits
+and mixed Browser/Native behavior. Keep the experiment isolated from the
+production [routing contract](./standards/routing-transport.md); Go reuse already
+works, so a Rust alternative needs a concrete Go limitation.
 
 ## Parked Product Work
 
 1. **Representative device/network acceptance.** Resume the remaining matrix in
    [verification status](./verification-status.md#remaining-device-and-network-acceptance)
-   when directed, preserving the owner's platform deferrals. Correlate freezes
-   with publisher/receiver evidence before changing media policy. Run physical
-   workloads serially from stable executable paths with cleanup between runs.
-   Before using the optional `viewer-mbb` benchmark canary, align its injected
-   evidence and capacity assertions with the current sender-owned quality
-   contract; its old Viewer-only trigger is not a valid quality acceptance gate.
-2. **Broader quality work.** Reopen from measured benefit at acceptable complexity.
-   The [Browser pool comparison](./research/browser-local-encoding-pool.md#balanced-startup-and-recovery)
-   records a cold-encoder adaptation tradeoff; a low resolution by itself is not
-   a defect or active repair target. Prioritize avoidable interruptions, failed
-   recovery or degradation of healthy siblings when evidence establishes them.
-   Preserve chosen profiles, bitrate ceilings, endpoint capacity and P2P-first
-   routing unless a new accepted decision supports changing them. No weighted
-   score, all-pairs probes, periodic rebalancing, parent-wide prediction or
-   room-wide minimum. Check whether a quality move merely shifts pressure to
-   another parent's siblings before widening policy.
-3. **Control/resource fairness and input review.** Reassess the authenticated
-   WebSocket/SFU owner, HTTP/body/resource bounds, authorization and error/log
-   handling before adding a queue or limiter. No parallel security framework,
-   accounts, risk score or speculative policy layer.
-   Measure signaling-lock contention and synchronous diagnostic I/O before
-   changing the lock or execution model; their cost remains a tradeoff.
-4. **Reachable ownership/refactor work.** Retain Host/Viewer page media-session
-   extraction as a candidate alongside related behavior changes. Evaluate clear
-   resource owners, fewer shared writers and a smaller change surface under
-   [engineering review](./standards/engineering.md#ablation-and-review); file
-   size alone does not justify a split. The completed audits do not close this
-   candidate. Reopen C=3 structural-intent retention and multi-child evidence
-   ownership only with current-contract reproductions.
-   When related behavior changes, compare the Browser/Native recovery budget;
-   preserve Native bridge versus network failure distinctions when sharing code.
-   No new revision namespace, failure-state mirror or topology queue by default.
-   Native Host loopback media failure currently ends the share, although Native
-   publication has its own source. The loopback stream also supplies Browser
-   quality candidates and gates quality/SFU updates; simply ignoring its failure
-   leaves dead consumers. Review those owners and the track-ended handler before
-   changing recovery. This is not an established cause of the game-entry report.
+   when directed, preserving platform deferrals and serial physical checks.
+   Before reusing the optional `viewer-mbb` canary, replace its obsolete
+   Viewer-only trigger and capacity assertions with the sender-owned contract.
+2. **Broader quality work.** Reopen from measured interruptions, failed recovery
+   or healthy-sibling degradation at acceptable complexity. The
+   [Browser pool comparison](./research/browser-local-encoding-pool.md#balanced-startup-and-recovery)
+   owns cold-encoder tradeoffs; low resolution alone is not a defect. Check
+   whether a proposed move merely shifts pressure to another parent's siblings.
+3. **Signaling execution model.** Measure signaling-lock contention, synchronous
+   persistence, presence fan-out, diagnostic I/O and cross-room password-work
+   fairness before changing the lock or execution model.
+4. **Reachable ownership/refactor work.** With related behavior changes, evaluate
+   per-share Host and Viewer route ownership under
+   [engineering review](./standards/engineering.md#ablation-and-review).
+   Reopen C=3 structural-intent retention or multi-child evidence ownership only
+   with current-contract reproductions. Shared recovery must preserve Native
+   bridge versus network-failure semantics. Before changing Host loopback-failure
+   retirement, account for its preview, Browser quality candidates, quality/SFU
+   updates and track-ended consumers; independent Native publication alone does
+   not make ignoring the failure safe. This is not a diagnosed field cause.
 5. **Storage fault recovery.** Choose and verify a damaged-disk/COMMIT/ROLLBACK
    recovery policy before adding catch-and-continue or retries. This failure
    boundary remains unestablished after ordinary persistence checks.
@@ -227,23 +208,23 @@ not establish better connection success or speed; this note adds no retry policy
    Viewer only after the [platform-output gate](./research/platform-output.md)
    passes.
 7. **Additional languages.** Review community catalogs and their rendered UI
-   following the [translation guide](./guide/translating.md). Add website,
-   documentation or App console translations as contributed; verify text
-   direction and layout when a language requires it. Check contributed language
-   names and rendered menu navigation when registering a new catalog.
+   following the [translation guide](./guide/translating.md), including names,
+   menu navigation, text direction and layout.
 8. **Windows code signing.** Revisit after enrollment in a trusted signing
-    service. Sign Piik's executables before archive checksums are computed;
-    signing improves publisher identity but does not guarantee that antivirus
-    cloud scanning stops. Service selection and enrollment remain pending.
+    service. Sign executables before archive checksums; publisher identity does
+    not guarantee that antivirus cloud scanning stops.
 9. **Gitee download-source warning.** Paused by the owner. Keep GitHub primary
     and retain Gitee; do not add a self-hosted mirror. Chrome still blocks the
     Gitee attachment when Referer is removed. Reopen for new evidence or a
     provider review; the warning remains unresolved.
-10. **4K in advanced sharing settings.** Hold the isolated candidate for joint
-    review with the next room-interaction release; its compatibility and release
-    boundary are not yet accepted. Add 3840x2160 without changing the default or recommended
-    presets. Extend the existing capture, decode and relay bounds together; verify
-    H.264 level negotiation for 4K at 60 fps. Current strict quality messages reject
-    `2160p`, so preserve published Browser/App/Server compatibility through explicit
-    receiving-end support before exposing or sending the new setting. Include
-    source replacement, lower outputs and resource limits in acceptance.
+10. **Release-operation policy.** Protected release environments, immutable
+    draft assets and changing mirror-failure policy remain unaccepted proposals;
+    evaluate their benefit before adding release machinery.
+11. **Automatic local chat history.** Explicit TXT export covers manual retention.
+    Reconsider automatic storage only with a stable room-incarnation identity,
+    bounded retention and a clear delete control; reusable room codes must not
+    combine conversations. No new history service or wire field is authorized.
+12. **Direct OBS input (#436).** Reopen for a measured virtual-camera limitation.
+    The [capture assessment](./research/camera-and-microphone.md) records raw-frame
+    output and the WHIP boundary; virtual camera alone is not a second encode.
+    Do not add an RTMP/WHIP listener without an accepted publication owner.

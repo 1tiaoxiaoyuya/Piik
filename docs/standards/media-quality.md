@@ -6,9 +6,8 @@ and [screen-audio research](../research/browser-screen-audio-quality.md).
 [ADR-0007](../adr/0007-path-isolated-representation-quality.md) owns Browser
 source intent and codec selection, [ADR-0008](../adr/0008-window-scoped-audio-capture.md)
 owns screen-audio scope, and [ADR-0013](../adr/0013-embedded-node-local-media.md)
-owns the current candidate's shared Native/SFU output model. This file describes
-that source contract. [Status](../status.md) separates it from the last known
-production behavior and remaining acceptance.
+owns the shared Native/SFU output model. This file describes that product
+contract. [Status](../status.md) indexes delivery and remaining acceptance.
 
 ## Capture And Controls
 
@@ -20,8 +19,12 @@ production behavior and remaining acceptance.
   a title. An ordinary Web Host does not probe localhost.
 - Camera is a peer source choice in the same picker, including on phones. Only
   the chosen source requests permission. Browser/camera Host microphone capture
-  is explicit and uses voice processing separately from screen audio; its mixer
-  produces one audio output for the existing media routes. Muting or losing the
+  is explicit and defaults to Browser voice processing, separately from screen audio.
+  The Host may turn that processing off for music or virtual audio inputs;
+  the input change preserves the existing mixed output and leaves the previous
+  input usable on failure. This requests Browser processing settings, not a
+  bypass of device/system effects. Native PCM capture uses device/system settings.
+  The mixer produces one audio output for the existing media routes. Muting or losing the
   microphone must not stop healthy video. Share retirement releases its devices
   and rejects late permission results. Native App capture mixes source and
   microphone PCM before its existing Opus encoder, preserving one output track
@@ -39,6 +42,17 @@ production behavior and remaining acceptance.
   frame matches its desktop source dimensions. Other frames retain their own
   aspect ratio. This changes only the encoded presentation, never the game or
   display settings; vendor-private scaling is not inferred.
+- Windows SDR conversion owns one output color contract: limited-range BT.601
+  NV12 with matching H.264 metadata. RGB capture and decoded video retain their
+  input range/matrix through conversion and relay scaling; dimensions do not
+  determine color space. Unspecified SDR follows the WebRTC convention.
+- Windows native HDR sources retain scRGB FP16 until platform tone mapping,
+  source-display white-level adjustment and sRGB conversion produce SDR. Live
+  capture and source thumbnails share this owner; conversion precedes output
+  fanout and does not add a media route or per-encoder tone curve. Ordinary SDR
+  keeps its copy path. Source-display color changes refresh capture input,
+  not room authority or transport. [Fidelity evidence](../research/media-fidelity.md)
+  owns platform checks; this is HDR-to-SDR, not end-to-end HDR delivery.
 - Where Windows supports border control, the native source picker offers
   **Show capture border**, off by default. The choice stays in the Host page and
   follows native source and quality changes. Source previews request borderless
@@ -99,6 +113,12 @@ The three recommended profiles are ceilings, not delivery guarantees:
 1440p; frame rate, bitrate, and `maintain-resolution | balanced |
 maintain-framerate` remain independent controls. Display video uses the standard
 `contentHint = "motion"` for game motion.
+Native H264 retains Constrained Baseline. Capture validates the coding-tool subset under
+RFC 6184, including equivalent Constrained Baseline constraint bytes, and reports
+the actual SPS profile/level; one vendor's byte spelling is not the contract.
+Native ingress and relay accept only a negotiated profile/packetization compatible
+with their unchanged encoded downstream source. A codec name alone is not enough;
+same-source renegotiation must preserve that boundary before altering the live peer.
 
 Framework-driven downscaling under bandwidth or device pressure is valid within
 the selected degradation preference. A low decoded resolution alone is not a
@@ -141,44 +161,76 @@ adapter/encoder candidates within the shared selection budget. Manual H264
 requires actual H264 output and never changes codec on failure. The selected
 device owns capture and output workers; its identity is retained as the first
 choice for quality/source replacement. Native relay encoding uses the same
-selection owner. Auto measures encoding work
-for synthetic NV12 frames at the selected dimensions and frame rate, with a
-bounded warmup and sample. If H264 sustains the target it is selected; otherwise
-a usable H264 candidate is compared with VP8 within the four-second budget.
-An unsuccessful or timed-out comparison retains the proved H264 encoder. With
-no usable H264 candidate, Auto starts the ordinary VP8 path directly, as manual
-VP8 does; a benchmark with no alternative to compare must not gate capture.
+selection owner. Auto paces synthetic NV12 frames at the selected dimensions and
+frame rate through the live encoder pipeline, including its rate control and frame
+dropper, with the Browser probe's warmup, one-second sample and 100 ms lag
+allowance. Cold-start lag is excluded from the measured window; the selection
+deadline still bounds warmup and hardware input/output waits. A candidate whose
+measured delivery falls outside that allowance is rejected and the next candidate
+is tried within the four-second budget. The probe retires before the live encoder
+is prepared and proved, so selection requires only one hardware session at a time.
+Without a sustaining candidate, Auto starts the ordinary VP8 path directly, as manual VP8 does. A
+faster software encode never replaces a sustaining H264 encoder. Encoder readiness
+uses Media Foundation events rather than timer-based polling.
 Actual encoding and failure reporting remain owned by the capture worker. This
-is a throughput comparison, not a perceptual-quality score or a promise under
-future GPU load.
+is a cadence check, not a perceptual-quality score or a promise under future
+GPU load.
 The returned actual codec owns the shared source, preview, and relay; live
 quality/source changes retain it. Other native platform encoders remain H264.
 
 ## Framework-Owned Adaptation
 
-Each Browser direct, relay, or SFU video sender owns one clone of its capture or received
-source track. The original track remains a source and local presentation track;
-it is never attached directly to an outbound sender. Replacing or retiring a
-sender also stops its clone, so native adaptation state cannot survive by being
-inherited through the original track. Host pause and live capture constraints
-are propagated to current Host-owned clones.
+Each Browser direct, relay, or SFU video sender owns a separate track. The original
+track remains a source and local presentation track; it is never attached directly
+to an outbound sender. Display capture with raw-frame stream support forwards a
+bounded input clone into a generated sender track, without resizing or encoding.
+This prevents encoder feedback from shrinking its own capture recovery input;
+[the Chromium capture lock](../research/browser-local-encoding-pool.md#sustained-h264-recovery)
+owns the evidence. Camera/received tracks and unsupported Browsers retain ordinary
+clones. Capture constraints and capture metadata belong to the input. Its native
+idle refresh is retained through a 1 fps capture constraint; sender adaptation has
+no new FPS or resolution floor. Pause gates the outgoing track. Replacement and
+retirement cancel the frame pipe and stop both owned ends; an unexpected input
+end belongs to the current sending operation, never the shared source or siblings.
 Connection retirement also settles its pending sender and negotiation waits;
 closing a Browser PeerConnection alone does not guarantee that its promises
 settle. Cancellation starts before joining work that depends on it, while a
 replacement still waits for the retired owner's cleanup.
 
+Browser and Native encoder-group admission uses current native demand, not the
+previously applied rate. A new or pending join must not displace an existing
+rate owner by raising or retaining its budget against that owner's demand.
+Revalidate pending admission before planning other memberships.
+
 Eligible Browser P2P parents use the source-owned pool in
 [ADR-0014](../adr/0014-browser-node-local-encoding-pool.md). Compatible direct
 children share one independent local WebRTC producer; incompatible demands
-remain separate. Each outgoing connection keeps native transport, allocation
-and recovery, with a tiny carrier supplying its RTP clock. Producers use
-the existing native video target under Host ceilings. Actual forwarded-frame
+remain separate. Joining another producer must fit the child's native allocation;
+a quiet scene's low byte rate does not prove that producer's rate budget fits.
+Pending separation remains necessary while another compatible member needs a
+higher native budget; quiet output alone cannot cancel it. When that demand
+leaves or the child's budget recovers, the current producer can adapt in place.
+Optional reuse also preserves the healthy current output's rate budget and
+observed quality within Host ceilings through recovery-frame commitment, using
+the actual candidate frame and current output rather than preparation alone.
+Rejected membership retains current delivery and its recovery requests.
+A recovery frame already being written retains its owner until completion,
+including across pause/resume; cancellation belongs to the output that knows
+whether writing has started.
+Each outgoing connection keeps native transport, allocation and recovery, with
+a tiny carrier supplying its RTP clock. Producers use the existing native video
+target under Host ceilings. A new producer seeds its
+local WebRTC start rate from that allocation, without a minimum or a change to
+the outgoing connection's estimate. Subsequent budgets use the existing sender
+parameters; initialization does not add a recovery controller. Actual forwarded-frame
 and producer observations remain distinct from the tiny carrier's statistics.
 Producer startup protection begins at actual outgoing publication, excluding
 local warmup and paused frames. The synthetic carrier uses screen-content
 transport probing; the real producer keeps the Host's picture adaptation.
 Capture constraints and the picture's sender FPS ceiling belong to the real
-source and producer, not the producer-driven carrier clock. Outgoing transport
+source and producer, not the producer-driven carrier clock. The carrier
+preserves its frame rate instead of adapting picture cadence a second time.
+The producer retains the Host's degradation preference. Outgoing transport
 bitrate still follows the Host ceiling; ordinary fallback restores its picture
 sender limits. Preparation and applied-budget completion re-evaluate pending
 membership immediately; accepting a recovery frame still commits the handoff.
@@ -187,9 +239,9 @@ pooling use ordinary senders. Prepared ordinary quality candidates, Native
 ingress and Browser SFU remain independent compositions.
 
 Each ordinary Browser PeerConnection owns stock WebRTC congestion control and
-sender adaptation. Clones share one underlying media source and therefore do not provide
-complete simultaneous isolation: framework source-wants aggregation may still
-partially reduce frames available to sibling clones. Sibling outputs may differ;
+sender adaptation. Ordinary clones share one underlying media source and therefore
+do not provide complete simultaneous isolation: framework source-wants aggregation
+may still partially reduce frames available to sibling clones. Sibling outputs may differ;
 Piik does not impose a room-wide minimum. The Host's one Browser SFU
 publication uses the share-generation codec and selected ceilings. Its ordinary
 simulcast outputs follow pinned LiveKit screen-share construction: original and
@@ -281,6 +333,17 @@ exists and what is actually delivered.
 A Native audio-process failure does not end healthy video. A later explicit
 source replacement resumes audio through the existing track and encoder owner;
 it does not trigger an automatic capture retry or change room audio topology.
+
+Optional Windows screen-audio exclusion binds one selected process tree to its
+PID and creation time under [ADR-0008](../adr/0008-window-scoped-audio-capture.md).
+The selection lasts for the share, survives source-audio off/on and refresh,
+and is never saved across App runs or rebound by executable name. Changing to a
+window source or explicitly selecting no exclusion clears it. A requested
+exclusion retires previous source audio before replacement preparation; failure
+or target exit leaves source audio silent while healthy video and the Host
+microphone continue. Only an explicit source selection resumes it. A missing
+capability must reject the request, never discard the exclusion. Old pages keep
+their existing audio behavior.
 
 ## Observable Truth
 

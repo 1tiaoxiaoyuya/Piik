@@ -67,6 +67,7 @@ type Options struct {
 	Video            nativecapture.VideoOptions
 	Profile          QualityProfile
 	AudioEnabled     bool
+	ExcludeAudio     *nativecapture.CaptureTarget
 	MicrophoneMixing bool
 	EdgeCapacity     int
 	BindAddress      string
@@ -138,6 +139,7 @@ func Start(parent context.Context, options Options) (*Session, error) {
 			parent,
 			options.CaptureProcess,
 			options.Video.Target,
+			options.ExcludeAudio,
 		)
 		if audioErr != nil {
 			slog.DebugContext(parent, "piik-client", "event", "capture-audio-unavailable", "share", diagnostics.ID(options.ShareID), diagnostics.Error(audioErr))
@@ -399,9 +401,9 @@ func (session *Session) UpdateProfile(profile QualityProfile) error {
 }
 
 func (session *Session) ReplaceSource(
-	ctx context.Context,
 	options nativecapture.VideoOptions,
 	audioEnabled bool,
+	excludeAudio *nativecapture.CaptureTarget,
 ) error {
 	session.updateMu.Lock()
 	defer session.updateMu.Unlock()
@@ -421,18 +423,34 @@ func (session *Session) ReplaceSource(
 	if session.mixer == nil && audioEnabled != hasAudio {
 		return errors.New("native source audio availability cannot change while sharing")
 	}
+	if excludeAudio != nil {
+		if session.mixer == nil {
+			return errors.New("native audio exclusion requires mixed audio")
+		}
+		// A privacy change retires the old source before preparation. Failure must
+		// leave it silent rather than retaining unfiltered audio; video/mic stay live.
+		session.mu.Lock()
+		previousAudio := session.audioStream
+		session.audioStream = nil
+		session.mu.Unlock()
+		session.mixer.setSource(nil)
+		if previousAudio != nil {
+			_ = previousAudio.Close()
+		}
+	}
 	options.Profile = profile.Video
 	options.RestoreToken = ""
-	replacement, state, err := session.prepareVideo(ctx, options, options.Target.Kind == "picker", false)
+	replacement, state, err := session.prepareVideo(session.ctx, options, options.Target.Kind == "picker", false)
 	if err != nil {
 		return err
 	}
 	var replacementAudio *nativecapture.Stream
 	if audioEnabled {
 		replacementAudio, err = startAudioCapture(
-			ctx,
+			session.ctx,
 			session.captureProcess,
 			options.Target,
+			excludeAudio,
 		)
 		if err != nil {
 			_ = replacement.Close()
@@ -453,11 +471,15 @@ func startAudioCapture(
 	ctx context.Context,
 	captureProcess string,
 	target nativecapture.CaptureTarget,
+	excludeAudio *nativecapture.CaptureTarget,
 ) (*nativecapture.Stream, error) {
+	if excludeAudio != nil {
+		return nativecapture.StartAudio(ctx, captureProcess, *excludeAudio, true)
+	}
 	if target.Kind == "display" || target.Kind == "picker" {
 		return nativecapture.StartSystemAudio(ctx, captureProcess)
 	}
-	return nativecapture.StartAudio(ctx, captureProcess, target)
+	return nativecapture.StartAudio(ctx, captureProcess, target, false)
 }
 
 func (session *Session) prepareVideo(
@@ -561,7 +583,7 @@ func (session *Session) installCapture(next *nativecapture.Stream) error {
 	// Preparation has consumed these events. Apply them to the new generation
 	// before acknowledging it, just as the live reader handles unavailable layers.
 	for _, layer := range unavailable {
-		if err := session.source.DisableLayer(layer); err != nil {
+		if err := session.disableCaptureLayer(next, layer); err != nil {
 			return err
 		}
 	}
@@ -574,6 +596,22 @@ func (session *Session) installCapture(next *nativecapture.Stream) error {
 	session.mu.Unlock()
 	session.emit(Event{Type: "capture-state", ShareID: session.shareID, State: "active"})
 	return nil
+}
+
+func (session *Session) disableCaptureLayer(stream *nativecapture.Stream, layer int) error {
+	session.mu.Lock()
+	if session.stream != stream || session.closed || session.ctx.Err() != nil {
+		session.mu.Unlock()
+		return nil
+	}
+	// Accept failure atomically with capture selection. Closing transports may
+	// wait for callbacks, so only the source-state change belongs under this lock.
+	retire, err := session.source.MarkLayerUnavailable(layer)
+	session.mu.Unlock()
+	if retire != nil {
+		retire()
+	}
+	return err
 }
 
 func (session *Session) CloseEdge(connectionID string) {
@@ -832,7 +870,7 @@ func (session *Session) runVideo() error {
 			if session.source == nil {
 				return fail(errors.New("native output ended before its source state"))
 			}
-			if err = session.source.DisableLayer(frame.Layer); err != nil {
+			if err = session.disableCaptureLayer(current, frame.Layer); err != nil {
 				return fail(err)
 			}
 		case nativecapture.FramePCM:
@@ -1177,8 +1215,12 @@ func (state CaptureState) applyBackend(options *nativecapture.VideoOptions) {
 }
 
 func validH264ProfileLevelID(value string) bool {
-	switch value {
-	case "42c01e", "42c01f", "42c020", "42c028", "42c029", "42c02a", "42c032", "42c033":
+	level, valid := encoded.H264ConstrainedBaselineLevel(value)
+	if !valid {
+		return false
+	}
+	switch level {
+	case 30, 31, 32, 40, 41, 42, 50, 51:
 		return true
 	default:
 		return false

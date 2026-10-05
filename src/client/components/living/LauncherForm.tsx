@@ -49,6 +49,7 @@ export function LauncherForm({
   lan,
   onSubmit,
   children,
+  version,
 }: {
   mode: AppMode;
   onModeChange: (mode: AppMode) => void;
@@ -63,6 +64,7 @@ export function LauncherForm({
   };
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   children?: ReactNode;
+  version?: string;
 }) {
   const { vis, t } = useCopy();
   const accessHintId = useId();
@@ -112,7 +114,7 @@ export function LauncherForm({
               key={choice.mode}
               type="button"
               role="radio"
-              className={`lr-client-mode${mode === choice.mode ? " is-selected" : ""}`}
+              className={`lr-tile lr-client-mode${mode === choice.mode ? " is-selected" : ""}`}
               aria-checked={mode === choice.mode}
               tabIndex={mode === choice.mode ? 0 : -1}
               aria-label={t(choice.label)}
@@ -206,6 +208,22 @@ export function LauncherForm({
         disabled={(mode === "site" && !site.trim()) ||
           (mode === "local" && lan !== undefined && !lan.selected)}
       />
+      <div className="lr-client-about">
+        {version && <p className="lr-client-version" aria-label={t("client.launch.version", { version })}>
+          {vis ? version : t("client.launch.version", { version })}
+        </p>}
+        <p aria-label={vis ? t("client.launch.credit") : undefined}>
+          {vis ? "MIT · TNTcraft" : t("client.launch.credit")}
+        </p>
+        <div className="lr-client-project-links">
+          <a href="https://piik.tv/" target="_blank" rel="noopener noreferrer" aria-label={t("client.launch.website")}>
+            {vis ? "piik.tv" : t("client.launch.website")}<span aria-hidden="true"> ↗</span>
+          </a>
+          <a href="https://github.com/TNTcraftHIM/Piik" target="_blank" rel="noopener noreferrer" aria-label={t("client.launch.source")}>
+            {vis ? "GitHub" : t("client.launch.source")}<span aria-hidden="true"> ↗</span>
+          </a>
+        </div>
+      </div>
     </form>
   );
 }

@@ -25,9 +25,12 @@ import {
 import { browserCaptureDevices } from "../media/capture-devices";
 import { AppHeader, LedStrip } from "../components/living/Header";
 import { WelcomeLine } from "../components/living/WelcomeLine";
-import { Couch, type CouchEntry } from "../components/living/Couch";
+import type { CouchEntry } from "../components/living/Couch";
 import { SharingSettings } from "../components/living/SharingSettings";
 import { HostMicrophone, HostMicrophoneSettings } from "../components/living/HostMicrophone";
+import { RoomInteractions } from "../components/living/RoomInteractions";
+import { RoomChatOverlay } from "../components/living/RoomChatOverlay";
+import type { RoomInteractionSession } from "../lib/room-interactions";
 import { HostAudio } from "../media/host-audio";
 import {
   CaptureSourcePicker,
@@ -38,6 +41,7 @@ import {
   RoomAdmissionBadge,
   roomAdmission,
   RoomChip,
+  RoomCodePlaceholder,
 } from "../components/living/RoomChip";
 import { RouteTree } from "../components/living/RouteTree";
 import {
@@ -330,7 +334,10 @@ function hostTerminationKey(reason: SignalingTerminationReason): CopyKey {
 }
 
 interface HostPageProps {
+  roomInteractionsAvailable?: boolean;
+  hostRoomSessionAvailable?: boolean;
   sfuAvailable?: boolean;
+  sfuOnly?: boolean;
   natPredictionAvailable?: boolean;
   connectionAttemptProgress4?: boolean;
   launchedByClient?: boolean;
@@ -344,12 +351,16 @@ type ShareSourceSelection =
       client: NativeClient;
       target: NativeCaptureTarget;
       audio: boolean;
+      excludeAudio?: NativeCaptureTarget;
       showCaptureBorder: boolean;
       path: NativeCapturePath;
     };
 
 export function HostPage({
+  roomInteractionsAvailable = false,
+  hostRoomSessionAvailable = false,
   sfuAvailable = false,
+  sfuOnly = false,
   natPredictionAvailable = false,
   connectionAttemptProgress4 = false,
   launchedByClient = false,
@@ -367,7 +378,8 @@ export function HostPage({
     () => ({
       ...DEFAULT_ROUTE_POLICY,
       peerOnly: !sfuAvailable,
-      natPrediction: natPredictionAvailable,
+      topologyOptimization: !sfuOnly,
+      natPrediction: natPredictionAvailable && !sfuOnly,
     }),
   );
   const [videoCodecMode, setVideoCodecMode] =
@@ -381,7 +393,9 @@ export function HostPage({
   const [stream, setStream] = useState<MediaStream | null>(null);
   const hostAudioRef = useRef<HostAudio | null>(null);
   const [microphoneEnabled, setMicrophoneEnabled] = useState(false);
+  const [interactionSession, setInteractionSession] = useState<RoomInteractionSession | null>(null);
   const [microphoneVolume, setMicrophoneVolume] = useState(1);
+  const [microphoneVoiceProcessing, setMicrophoneVoiceProcessing] = useState(true);
   const [microphonePending, setMicrophonePending] = useState(false);
   const [microphoneDevices, setMicrophoneDevices] = useState({ browser: "", native: "" });
   const [cameraDevice, setCameraDevice] = useState("");
@@ -444,6 +458,13 @@ export function HostPage({
   useEffect(() => {
     roomRef.current = room;
   }, [room]);
+  useEffect(() => {
+    let active = true;
+    if (hostRoomSessionAvailable && room) void roomInitializationRef.current.then(() => {
+      if (active && isCurrentRoomAuthority(room)) connectRoomSignal(room).start();
+    });
+    return () => { active = false; };
+  }, [hostRoomSessionAvailable, room?.roomId, room?.hostToken]);
   const [creationProfile, setCreationProfile] =
     useState<HostCreationProfile>(readCreationProfile);
   const creationProfileRef = useRef(creationProfile);
@@ -486,6 +507,20 @@ export function HostPage({
   }
   function setNoticeKey(key: CopyKey, comic: ComicKind | HintKind, tone: ComicTone, vars?: Record<string, string>): void {
     setNoticeValue({ kind: "key", key, vars, target: "operation", comic, tone });
+  }
+  function setStatusNotice(
+    message: string | { key: CopyKey; vars?: Record<string, string> },
+    comic: ComicKind,
+    tone: ComicTone,
+  ): void {
+    setNoticeValue({
+      ...(typeof message === "string"
+        ? { kind: "text", text: message }
+        : { kind: "key", key: message.key, vars: message.vars }),
+      target: "television",
+      comic,
+      tone,
+    });
   }
   function setNoticeError(
     error: unknown,
@@ -580,12 +615,14 @@ export function HostPage({
   const nativeClientRef = useRef<NativeClient | null>(null);
   const nativeClientConnectRef = useRef<Promise<NativeClient | null> | null>(null);
   const nativeShareGenerationRef = useRef<string | null>(null);
+  const serverShareGenerationRef = useRef<string | null>(null);
   const nativeMediaBridgeRef = useRef<NativeMediaBridge | null>(null);
   const nativeMediaIngressRef = useRef<NativeMediaIngress | null>(null);
   const nativeEventCleanupRef = useRef<(() => void) | null>(null);
   const nativeClientCloseCleanupRef = useRef<(() => void) | null>(null);
   const nativeModeRef = useRef(false);
   const nativeSourceAudioRef = useRef<boolean | undefined>(undefined);
+  const nativeAudioSelectionRef = useRef<{ enabled: boolean; exclude?: NativeCaptureTarget } | null>(null);
   const nativeSourceRequestRef = useRef<object | null>(null);
   const nativePreviewTailRef = useRef<Promise<void>>(Promise.resolve());
   const nativeSourcePathRef = useRef<NativeCapturePath | null>(null);
@@ -688,6 +725,7 @@ export function HostPage({
       browserVideoPoolRef.current = null;
       activeHostChildPeerIdsRef.current = [];
       endpointMediaCopyCapacityRef.current = MAX_ENDPOINT_MEDIA_CHILDREN;
+      serverShareGenerationRef.current = null;
       hostPeerIdRef.current = null;
       if (copiedResetTimerRef.current !== null) {
         window.clearTimeout(copiedResetTimerRef.current);
@@ -836,7 +874,7 @@ export function HostPage({
     return warning;
   }
 
-  function disposeResources(notifyServer: boolean): void {
+  function disposeResources(notifyServer: boolean, keepRoomSession = false): void {
     sourceSwitchRef.current = null;
     qualityChangeRef.current = null;
     pendingQualityChangeRef.current = null;
@@ -851,14 +889,20 @@ export function HostPage({
       if (notifyServer) {
         const shareGeneration = shareGenerationRef.current;
         if (shareGeneration) {
-          signal.send({ type: "stop-sharing", shareGeneration });
+          if (keepRoomSession) signal.stopSharing(shareGeneration);
+          else signal.send({ type: "stop-sharing", shareGeneration });
         }
       }
-      // Never carry a terminal message into a later authentication: the next
-      // sharing generation may already be reusing this room.
-      signal.stop();
+      if (!keepRoomSession) {
+        // Never carry a terminal message into a later authentication: the next
+        // sharing generation may already be reusing this room.
+        signal.stop();
+      }
     }
-    signalRef.current = null;
+    if (!keepRoomSession) {
+      signalRef.current = null;
+      setInteractionSession(null);
+    }
     shareGenerationRef.current = null;
     disposeNativeShare();
     peersRef.current.forEach((peer) => peer.dispose());
@@ -868,8 +912,11 @@ export function HostPage({
     browserVideoPoolRef.current?.dispose();
     browserVideoPoolRef.current = null;
     activeHostChildPeerIdsRef.current = [];
-    endpointMediaCopyCapacityRef.current = MAX_ENDPOINT_MEDIA_CHILDREN;
-    hostPeerIdRef.current = null;
+    if (!keepRoomSession) {
+      endpointMediaCopyCapacityRef.current = MAX_ENDPOINT_MEDIA_CHILDREN;
+      hostPeerIdRef.current = null;
+    }
+    serverShareGenerationRef.current = null;
     void hostSfuRouteRef.current?.disconnect();
     hostSfuRouteRef.current = null;
     hostAudioRef.current?.dispose();
@@ -880,16 +927,16 @@ export function HostPage({
     retiringStreamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     retiringStreamRef.current = null;
-    iceConfigRef.current = null;
+    if (!keepRoomSession) iceConfigRef.current = null;
     setStream(null);
     setDetails(null);
     setPeerSnapshots(new Map());
-    setParticipantPresence([]);
+    if (!keepRoomSession) setParticipantPresence([]);
     viewerQualityEvidenceStore.clear();
     cancelViewerQualityEvidenceRender();
     setViewerQualityEvidence(viewerQualityEvidenceStore.getSnapshot());
     activeRouteRevisionRef.current = 0;
-    setSignalStatus("offline");
+    if (!keepRoomSession) setSignalStatus("offline");
     setSwitchingSource(false);
     setChangingQuality(false);
     sharingPausedRef.current = false;
@@ -943,6 +990,7 @@ export function HostPage({
     notifyServer = true,
     comic: ComicKind = "share-ended",
     tone: ComicTone = "off",
+    keepRoomSession = hostRoomSessionAvailable,
   ): void {
     const generation = activeGenerationRef.current;
     if (generation === null || generationRef.current !== generation) {
@@ -955,15 +1003,8 @@ export function HostPage({
     if (notifyServer && currentRoom) {
       writePreferredRoom(currentRoom.roomId);
     }
-    disposeResources(notifyServer);
-    setNoticeValue({
-      ...(typeof message === "string"
-        ? { kind: "text", text: message }
-        : { kind: "key", key: message.key, vars: message.vars }),
-      target: "television",
-      comic,
-      tone,
-    });
+    disposeResources(notifyServer, keepRoomSession);
+    setStatusNotice(message, comic, tone);
     setPhase("ended");
   }
 
@@ -987,7 +1028,9 @@ export function HostPage({
       );
       const replacement = hostRoomFromCreated(response);
       if (wasSharing) {
-        endSharing({ key: "host.roomReplaced" }, false);
+        endSharing({ key: "host.roomReplaced" }, false, "share-ended", "off", false);
+      } else if (signalRef.current) {
+        disposeResources(false);
       }
       replaceViewerInvite(activeRoom.roomId, null);
       if (!(await writeHostRoom(
@@ -1054,7 +1097,7 @@ export function HostPage({
         if (forgetRoom(activeRoom)) {
           // endSharing already stated the recovery path; the raw room error
           // would only overwrite it with the same 404 in server wording.
-          endSharing({ key: "host.roomInvalid" }, false, "room-not-found", "bad");
+          endSharing({ key: "host.roomInvalid" }, false, "room-not-found", "bad", false);
           return;
         }
       }
@@ -1156,7 +1199,7 @@ export function HostPage({
     shareGeneration: string,
     selection: Extract<ShareSourceSelection, { kind: "native" }>,
   ): Promise<MediaStream | null> {
-    const { client, target, audio, showCaptureBorder, path } = selection;
+    const { client, target, audio, excludeAudio, showCaptureBorder, path } = selection;
     let bridge: NativeMediaBridge | null = null;
     let shareStarted = false;
     let nativeEventCleanup: (() => void) | null = null;
@@ -1181,6 +1224,7 @@ export function HostPage({
       );
       nativeMediaBridgeRef.current = bridge;
       nativeSourceAudioRef.current = undefined;
+      nativeAudioSelectionRef.current = { enabled: audio, exclude: excludeAudio };
       nativeEventCleanup = client.onEvent((event) => {
         if (event.shareId !== shareGeneration || !isCurrentShare(generation, shareGeneration) || nativeClientRef.current !== client) return;
         if (event.type === "audio-state") {
@@ -1203,6 +1247,7 @@ export function HostPage({
         shareId: shareGeneration,
         source: target,
         audio,
+        excludeAudio: audio ? excludeAudio : undefined,
         showCaptureBorder,
         adapterIndex: path.adapterIndex,
         encoderIndex: path.encoderIndex,
@@ -1392,6 +1437,7 @@ export function HostPage({
         sources,
         processAudio: client.health.nativeMedia.processAudio,
         systemAudio: client.health.nativeMedia.systemAudio,
+        processAudioExclusion: client.health.nativeMedia.processAudioExclusion,
         captureBorderControl: client.health.nativeMedia.captureBorderControl,
       });
     } catch (error) {
@@ -1484,6 +1530,7 @@ export function HostPage({
     target: NativeCaptureTarget,
     audio: boolean,
     showCaptureBorder: boolean,
+    excludeAudio?: NativeCaptureTarget,
   ): void {
     if (nativeSources?.kind !== "ready") return;
     const client = nativeClientRef.current;
@@ -1491,10 +1538,10 @@ export function HostPage({
     if (!client || !path) return;
     setShowCaptureBorder(showCaptureBorder);
     if (phase === "live" && nativeModeRef.current) {
-      void switchNativeSource(client, target, audio, path, showCaptureBorder);
+      void switchNativeSource(client, target, audio, path, showCaptureBorder, excludeAudio);
       return;
     }
-    void startSharing({ kind: "native", client, target, audio, showCaptureBorder, path });
+    void startSharing({ kind: "native", client, target, audio, excludeAudio, showCaptureBorder, path });
   }
 
   function disposeNativeShare(expectedShare = nativeShareGenerationRef.current): void {
@@ -1511,6 +1558,7 @@ export function HostPage({
     nativeShareGenerationRef.current = null;
     nativeModeRef.current = false;
     nativeSourceAudioRef.current = undefined;
+    nativeAudioSelectionRef.current = null;
     setNativeActive(false);
     if (!client || !shareGeneration) {
       releaseUnusedNativeClient();
@@ -1896,6 +1944,17 @@ export function HostPage({
     }
   }
 
+  function acceptHostPeerUpdate(peer: HostMediaPeer, snapshot: PeerSnapshot, generation: number): void {
+    if (!isCurrentGeneration(generation) || peersRef.current.get(peer.peerId) !== peer) return;
+    if (snapshot.connectionState === "failed" || snapshot.connectionState === "closed") {
+      reportHostChildFailure(peer.peerId, peer.connectionId, generation);
+      removePeer(peer.peerId);
+      return;
+    }
+    updatePeerSnapshot(snapshot);
+    reportSenderQuality(snapshot, activeRouteRevisionRef.current);
+  }
+
   function prepareHostChild(
     revision: number,
     assignment: HostRouteAssignment,
@@ -1928,17 +1987,12 @@ export function HostPage({
           isCurrentGeneration(generation) &&
           peersRef.current.get(peer.peerId) === peer
         ) {
+          reportHostChildFailure(peer.peerId, peer.connectionId, generation);
           removePeer(peer.peerId);
         }
       },
       onPromotedUpdate: (peer, snapshot) => {
-        if (
-          isCurrentGeneration(generation) &&
-          peersRef.current.get(peer.peerId) === peer
-        ) {
-          updatePeerSnapshot(snapshot);
-          reportSenderQuality(snapshot, activeRouteRevisionRef.current);
-        }
+        acceptHostPeerUpdate(peer, snapshot, generation);
       },
       onPreparedUpdate: (_peer, snapshot, revision) => {
         if (isCurrentGeneration(generation)) {
@@ -2064,13 +2118,7 @@ export function HostPage({
           ? signal.send({ type: "signal", targetPeerId, payload })
           : false,
       onUpdate: (snapshot) => {
-        if (
-          isCurrentGeneration(generation) &&
-          peersRef.current.get(peerId) === peer
-        ) {
-          updatePeerSnapshot(snapshot);
-          reportSenderQuality(snapshot, activeRouteRevisionRef.current);
-        }
+        acceptHostPeerUpdate(peer, snapshot, generation);
       },
     };
     peer = useNative
@@ -2214,7 +2262,6 @@ export function HostPage({
   function handleSignalMessage(
     message: ServerMessage,
     generation: number,
-    activeRoom: HostRoomState,
     reauthenticated: boolean,
     pendingQualitySettings: QualitySettings | null,
   ): void {
@@ -2223,29 +2270,8 @@ export function HostPage({
     }
     if (message.type === "authenticated" && message.role === "host") {
       discardPreparedHostChild();
-      hostPeerIdRef.current = message.peerId;
-      endpointMediaCopyCapacityRef.current = message.endpointMediaCopyCapacity;
-      const authenticatedProfile = {
-        codeEntryPolicy: message.codeEntryPolicy,
-        roomPassword: message.viewerPasswordEnabled
-          ? creationProfileRef.current.roomPassword
-          : null,
-      };
-      saveCreationProfile(authenticatedProfile);
-      creationProfileRef.current = authenticatedProfile;
-      setCreationProfile(authenticatedProfile);
-      setViewerPasswordEnabled(message.viewerPasswordEnabled);
-      setViewerPasswordDraft(authenticatedProfile.roomPassword ?? "");
-      setViewerPasswordVisible(false);
       routePolicyRef.current = { ...message.routePolicy };
       setRoutePolicy({ ...message.routePolicy });
-      setRoom((current) =>
-        mergeAuthenticatedHostRoom(
-          current,
-          activeRoom.roomId,
-          message.codeEntryPolicy,
-        ),
-      );
       const currentQualitySettings =
         pendingQualitySettings ?? message.qualitySettings;
       activeRouteRevisionRef.current = message.routeRevision;
@@ -2289,9 +2315,24 @@ export function HostPage({
         });
       return;
     }
-    if (message.type === "viewer-presence") {
-      retainViewerQualityEvidenceForPresence(message.viewers);
-      setParticipantPresence(message.viewers);
+    if (message.type === "sharing-started") {
+      if (message.shareGeneration !== shareGenerationRef.current) return;
+      serverShareGenerationRef.current = message.shareGeneration;
+      routePolicyRef.current = { ...message.routePolicy };
+      setRoutePolicy({ ...message.routePolicy });
+      commitQuality(message.qualitySettings);
+      activeRouteRevisionRef.current = message.routeRevision;
+      sharingPausedRef.current = message.paused;
+      setSharingPaused(message.paused);
+      setPhase("live");
+      const route = ensureHostSfuRoute(generation);
+      void route
+        .resyncAuthoritative({
+          revision: message.routeRevision,
+          phase: "active",
+          assignment: message.routeAssignment,
+        })
+        .then(() => syncHostSfuQualityWarning(route, generation));
       return;
     }
     if (message.type === "pause-sharing-source") {
@@ -2395,29 +2436,237 @@ export function HostPage({
       });
       return;
     }
-    if (message.type === "room-closed") {
-      if (!forgetRoom(activeRoom)) {
+  }
+
+  function connectRoomSignal(activeRoom: HostRoomState, shareGeneration?: string, allowReplacement = true): SignalingClient {
+    const previous = signalRef.current;
+    if (hostRoomSessionAvailable && previous?.ownsHostRoom(activeRoom.roomId, activeRoom.hostToken)) return previous;
+    previous?.stop();
+    let authenticated = false;
+    const hostClientId = getStableClientId("host", activeRoom.roomId);
+    hostClientIdRef.current = hostClientId;
+    const hostFallback = defaultHostDisplayName(visRef.current);
+    const initialDisplayName = readDisplayName(hostFallback);
+    displayNameRef.current = initialDisplayName;
+    setDisplayName(initialDisplayName);
+    setDisplayNameDraft(initialDisplayName);
+    setDisplayNameError(null);
+    const signal = new SignalingClient(
+      {
+        roomId: activeRoom.roomId,
+        role: "host",
+        token: activeRoom.hostToken,
+        clientId: hostClientId,
+        ...(hostRoomSessionAvailable ? { roomSession: true as const, roomOnly: true as const } : { shareGeneration }),
+        sharingPaused: false,
+        qualitySettings: qualitySettingsRef.current,
+        routePolicy: routePolicyRef.current,
+        viewerPresence: true,
+        ...(connectionAttemptProgress4 ? { connectionAttemptProgress4: true } : {}),
+        displayName: initialDisplayName,
+      },
+      {
+        onStatus: (status) => {
+          if (signalRef.current === signal && isCurrentRoomAuthority(activeRoom)) {
+            setSignalStatus(status);
+          }
+        },
+        onTerminated: (reason) => {
+          if (signalRef.current !== signal || !isCurrentRoomAuthority(activeRoom)) return;
+          if (activeGenerationRef.current !== null) {
+            endSharing({ key: hostTerminationKey(reason) }, false, "signal-failed", "bad", false);
+          } else {
+            disposeResources(false);
+            setStatusNotice({ key: hostTerminationKey(reason) }, "signal-failed", "bad");
+            setPhase("error");
+          }
+          if (reason === "SESSION_REPLACED") forgetRoom(activeRoom, true);
+        },
+        onAccessRequired: () => {
+          if (signalRef.current !== signal || !isCurrentRoomAuthority(activeRoom)) return;
+          if (activeGenerationRef.current !== null) {
+            endSharing({ key: "gate.expired" }, false, "access-denied", "bad", false);
+          } else {
+            disposeResources(false);
+            setStatusNotice({ key: "gate.expired" }, "access-denied", "bad");
+            setPhase("error");
+          }
+          onAuthorizationRequired?.();
+        },
+        onMessage: (message) => {
+          if (signalRef.current !== signal || !isCurrentRoomAuthority(activeRoom)) return;
+          const currentGeneration = activeGenerationRef.current;
+          const currentShareGeneration = shareGenerationRef.current;
+          const localShareActive =
+            currentGeneration !== null && currentShareGeneration !== null;
+          if (
+            !authenticated &&
+            message.type === "error" &&
+            message.code === "INVALID_TOKEN" &&
+            allowReplacement
+          ) {
+            if (!localShareActive || !signal.wantsHostPublication(currentShareGeneration!)) {
+              signalRef.current = null;
+              signal.stop();
+              setInteractionSession(null);
+              setSignalStatus("offline");
+              forgetRoom(activeRoom);
+              // Capture may still be awaiting permission. Its ready path owns
+              // creation/publication; room recovery must not start it early.
+              if (!localShareActive) {
+                setStatusNotice({ key: "host.roomInvalid" }, "room-not-found", "bad");
+                setPhase("error");
+              }
+              return;
+            }
+            signalRef.current = null;
+            signal.stop();
+            setSignalStatus("offline");
+            roomInitializationRef.current = createReplacementRoom(activeRoom, currentGeneration!, currentShareGeneration!);
+            return;
+          }
+          if (message.type === "error" && message.code === "INVALID_TOKEN") {
+            forgetRoom(activeRoom);
+            if (localShareActive) {
+              endSharing({ key: "host.roomInvalid" }, false, "room-not-found", "bad", false);
+            } else {
+              disposeResources(false);
+              forgetRoom(activeRoom);
+              setStatusNotice({ key: "host.roomInvalid" }, "room-not-found", "bad");
+              setPhase("error");
+            }
+            return;
+          }
+          if (message.type === "room-closed") {
+            if (!forgetRoom(activeRoom)) return;
+            if (localShareActive) {
+              endSharing({ key: "host.roomClosed" }, false, "room-closed", "off", false);
+            } else {
+              disposeResources(false);
+              setStatusNotice({ key: "host.roomClosed" }, "room-closed", "off");
+              setPhase("ended");
+            }
+            return;
+          }
+          if (message.type === "error" && message.code === "HOST_ALREADY_CONNECTED") {
+            if (localShareActive) {
+              endSharing(hostServerErrorNotice(message.code), false, "signal-failed", "bad", false);
+            } else {
+              disposeResources(false);
+              setStatusNotice(hostServerErrorNotice(message.code), "signal-failed", "bad");
+              setPhase("error");
+            }
+            return;
+          }
+          const reauthenticated =
+            authenticated &&
+            message.type === "authenticated" &&
+            message.role === "host";
+          if (message.type === "authenticated" && message.role === "host") {
+            authenticated = true;
+            iceConfigRef.current = message.iceConfig;
+            hostPeerIdRef.current = message.peerId;
+            endpointMediaCopyCapacityRef.current = message.endpointMediaCopyCapacity;
+            serverShareGenerationRef.current = message.shareGeneration;
+            const profile = {
+              codeEntryPolicy: message.codeEntryPolicy,
+              roomPassword: message.viewerPasswordEnabled ? creationProfileRef.current.roomPassword : null,
+            };
+            saveCreationProfile(profile);
+            creationProfileRef.current = profile;
+            setCreationProfile(profile);
+            setViewerPasswordEnabled(message.viewerPasswordEnabled);
+            setViewerPasswordDraft(profile.roomPassword ?? "");
+            setViewerPasswordVisible(false);
+            setRoom(current => mergeAuthenticatedHostRoom(current, activeRoom.roomId, message.codeEntryPolicy));
+            peersRef.current.forEach((peer) =>
+              peer.updateIceConfig(message.iceConfig),
+            );
+            void writeHostRoom(
+              activeRoom,
+              () => signalRef.current === signal && isCurrentRoomAuthority(activeRoom),
+            );
+            writePreferredRoom(activeRoom.roomId);
+          }
+          if (
+            message.type === "sharing-started" &&
+            currentShareGeneration !== null &&
+            message.shareGeneration === currentShareGeneration
+          ) {
+            serverShareGenerationRef.current = message.shareGeneration;
+          }
+          if (message.type === "sharing-start-failed") {
+            if (localShareActive && message.shareGeneration === currentShareGeneration) {
+              endSharing(hostServerErrorNotice(message.code), false, "signal-failed", "bad");
+            }
+            return;
+          }
+          if (message.type === "viewer-presence") {
+            retainViewerQualityEvidenceForPresence(message.viewers);
+            setParticipantPresence(message.viewers);
+            return;
+          }
+          if (message.type === "error") {
+            setNotice(hostServerErrorNotice(message.code), "signal-failed", "bad");
+            return;
+          }
+          const mediaActive =
+            currentGeneration !== null &&
+            currentShareGeneration !== null &&
+            serverShareGenerationRef.current === currentShareGeneration;
+          if (message.type === "authenticated" && message.role === "host" && mediaActive) {
+            setPhase("live");
+          }
+          if (!mediaActive) return;
+          handleSignalMessage(
+            message,
+            currentGeneration!,
+            reauthenticated,
+            reauthenticated
+              ? signal.pendingHostQualitySettings(currentShareGeneration!)
+              : null,
+          );
+        },
+      },
+      undefined,
+      { roomInteractions: roomInteractionsAvailable },
+    );
+    signalRef.current = signal;
+    setInteractionSession(signal.interactions);
+    return signal;
+  }
+
+  async function createReplacementRoom(activeRoom: HostRoomState, generation: number, shareGeneration: string): Promise<void> {
+    try {
+      const response = await createRoom(
+        creationProfileRef.current.codeEntryPolicy,
+        creationProfileRef.current.roomPassword,
+        readPreferredRoomId(),
+      );
+      const replacement = hostRoomFromCreated(response);
+      if (!isCurrentShare(generation, shareGeneration) || !isCurrentRoomAuthority(activeRoom)) {
+        closeAbandonedRoom(replacement);
         return;
       }
-      endSharing(say("host.roomClosed"), false, "room-closed", "off");
-      return;
-    }
-    if (message.type === "error") {
-      if (message.code === "INVALID_TOKEN") {
-        if (!forgetRoom(activeRoom)) {
-          return;
-        }
-        endSharing({ key: "host.roomInvalid" }, false, "room-not-found", "bad");
+      forgetRoom(activeRoom);
+      if (!(await writeHostRoom(replacement, () => isCurrentShare(generation, shareGeneration)))) {
+        closeAbandonedRoom(replacement);
+        throw new Error("Host room is already open in another tab");
+      }
+      roomRef.current = replacement;
+      setRoom(replacement);
+      const signal = connectRoomSignal(replacement, shareGeneration, false);
+      if (hostRoomSessionAvailable) signal.startSharing(shareGeneration, qualitySettingsRef.current, routePolicyRef.current);
+      signal.start();
+    } catch (error) {
+      if (!isCurrentShare(generation, shareGeneration)) return;
+      endSharing({ key: "host.roomInvalid" }, false, "room-not-found", "bad", false);
+      if (error instanceof ApiError && error.status === 401 && onAuthorizationRequired) {
+        onAuthorizationRequired();
         return;
       }
-      if (message.code === "AUTH_REQUIRED") {
-        return;
-      }
-      if (message.code === "HOST_ALREADY_CONNECTED") {
-        endSharing(hostServerErrorNotice(message.code), false, "signal-failed", "bad");
-        return;
-      }
-      setNotice(hostServerErrorNotice(message.code), "signal-failed", "bad");
+      setNoticeError(error, "room", "television");
+      setPhase("error");
     }
   }
 
@@ -2538,158 +2787,9 @@ export function HostPage({
         setRoom(createdRoom);
         claimedRoom = true;
       }
-      let replacementAttempted = false;
-      const connectSignal = (activeRoom: HostRoomState): SignalingClient => {
-        let authenticated = false;
-        const hostClientId = getStableClientId("host", activeRoom.roomId);
-        hostClientIdRef.current = hostClientId;
-        const hostFallback = defaultHostDisplayName(visRef.current);
-        const initialDisplayName = readDisplayName(hostFallback);
-        displayNameRef.current = initialDisplayName;
-        setDisplayName(initialDisplayName);
-        setDisplayNameDraft(initialDisplayName);
-        setDisplayNameError(null);
-        const signal = new SignalingClient(
-          {
-            roomId: activeRoom.roomId,
-            role: "host",
-            token: activeRoom.hostToken,
-            clientId: hostClientId,
-            shareGeneration,
-            sharingPaused: false,
-            qualitySettings: qualitySettingsRef.current,
-            routePolicy: routePolicyRef.current,
-            viewerPresence: true,
-            ...(connectionAttemptProgress4 ? { connectionAttemptProgress4: true } : {}),
-            displayName: initialDisplayName,
-          },
-          {
-            onStatus: (status) => {
-              if (
-                isCurrentShare(generation, shareGeneration) &&
-                signalRef.current === signal
-              ) {
-                setSignalStatus(status);
-              }
-            },
-            onTerminated: (reason) => {
-              if (
-                isCurrentShare(generation, shareGeneration) &&
-                signalRef.current === signal
-              ) {
-                endSharing({ key: hostTerminationKey(reason) }, false, "signal-failed", "bad");
-                if (reason === "SESSION_REPLACED") forgetRoom(activeRoom, true);
-              }
-            },
-            onAccessRequired: () => {
-              if (
-                isCurrentShare(generation, shareGeneration) &&
-                signalRef.current === signal
-              ) {
-                endSharing({ key: "gate.expired" }, false, "access-denied", "bad");
-                onAuthorizationRequired?.();
-              }
-            },
-            onMessage: (message) => {
-              if (
-                !isCurrentShare(generation, shareGeneration) ||
-                signalRef.current !== signal
-              ) {
-                return;
-              }
-              if (
-                !authenticated &&
-                message.type === "error" &&
-                message.code === "INVALID_TOKEN" &&
-                !replacementAttempted
-              ) {
-                replacementAttempted = true;
-                signalRef.current = null;
-                signal.stop();
-                setSignalStatus("offline");
-                forgetRoom(activeRoom);
-                void createReplacementRoom();
-                return;
-              }
-              const reauthenticated =
-                authenticated &&
-                message.type === "authenticated" &&
-                message.role === "host";
-              if (message.type === "authenticated" && message.role === "host") {
-                authenticated = true;
-                iceConfigRef.current = message.iceConfig;
-                peersRef.current.forEach((peer) =>
-                  peer.updateIceConfig(message.iceConfig),
-                );
-                void writeHostRoom(
-                  activeRoom,
-                  () => isCurrentShare(generation, shareGeneration) &&
-                    signalRef.current === signal,
-                );
-                writePreferredRoom(activeRoom.roomId);
-                setPhase("live");
-              }
-              handleSignalMessage(
-                message,
-                generation,
-                activeRoom,
-                reauthenticated,
-                reauthenticated
-                  ? signal.pendingHostQualitySettings(shareGeneration)
-                  : null,
-              );
-            },
-          },
-        );
-        return signal;
-      };
-      const createReplacementRoom = async (): Promise<void> => {
-        try {
-          const response = await createRoom(
-            creationProfileRef.current.codeEntryPolicy,
-            creationProfileRef.current.roomPassword,
-            readPreferredRoomId(),
-          );
-          const replacement = hostRoomFromCreated(response);
-          if (!isCurrentShare(generation, shareGeneration)) {
-            captured?.getTracks().forEach((track) => track.stop());
-            disposeNativeShare(shareGeneration);
-            closeAbandonedRoom(replacement);
-            return;
-          }
-          if (!(await writeHostRoom(
-            replacement,
-            () => isCurrentShare(generation, shareGeneration),
-          ))) {
-            closeAbandonedRoom(replacement);
-            throw new Error("Host room is already open in another tab");
-          }
-          roomRef.current = replacement;
-          setRoom(replacement);
-          const replacementSignal = connectSignal(replacement);
-          signalRef.current = replacementSignal;
-          replacementSignal.start();
-        } catch (error) {
-          if (!isCurrentShare(generation, shareGeneration)) {
-            if (nativeStarted) disposeNativeShare(shareGeneration);
-            return;
-          }
-          activeGenerationRef.current = null;
-          disposeResources(false);
-          if (
-            error instanceof ApiError &&
-            error.status === 401 &&
-            onAuthorizationRequired
-          ) {
-            onAuthorizationRequired();
-            return;
-          }
-          setNoticeError(error, "room", "television");
-          setPhase("error");
-        }
-      };
-      const signal = connectSignal(createdRoom);
-      signalRef.current = signal;
+      const signal = connectRoomSignal(createdRoom, shareGeneration);
+      if (hostRoomSessionAvailable) signal.startSharing(shareGeneration, qualitySettingsRef.current, routePolicyRef.current);
+
       signal.start();
     } catch (error) {
       if (!isCurrentShare(generation, shareGeneration)) {
@@ -2724,6 +2824,7 @@ export function HostPage({
     audio: boolean,
     path: NativeCapturePath,
     showCaptureBorder: boolean,
+    excludeAudio?: NativeCaptureTarget,
   ): Promise<void> {
     const generation = activeGenerationRef.current;
     const shareGeneration = nativeShareGenerationRef.current;
@@ -2750,12 +2851,16 @@ export function HostPage({
         sourceSwitchRef.current !== token ||
         nativeClientRef.current !== client
       ) return;
+      // Preserve an exclusion request even on failure: the App mutes source
+      // audio before replacing it, and the next picker must not default to all.
+      if (audio && excludeAudio) nativeAudioSelectionRef.current = { enabled: audio, exclude: excludeAudio };
       await client.replaceShareSource(
         shareGeneration,
         target,
         audio,
         path,
         showCaptureBorder,
+        audio ? excludeAudio : undefined,
       );
       if (
         !isCurrentGeneration(generation) ||
@@ -2765,6 +2870,7 @@ export function HostPage({
         return;
       }
       invalidateSenderQualityEvidence();
+      nativeAudioSelectionRef.current = { enabled: audio, exclude: excludeAudio };
       if (routePolicyRef.current.topologyOptimization) {
         signalRef.current?.send({ type: "reset-sender-quality" });
       }
@@ -2873,7 +2979,7 @@ export function HostPage({
       ? "host.camera.denied" : "host.camera.unavailable", target, comic: "source-failed", tone: "warn" });
   }
 
-  async function changeMicrophone(enabled: boolean, deviceId: string): Promise<void> {
+  async function changeMicrophone(enabled: boolean, deviceId: string, voiceProcessing = microphoneVoiceProcessing): Promise<void> {
     const audio = hostAudioRef.current;
     const generation = activeGenerationRef.current;
     const client = nativeModeRef.current ? nativeClientRef.current : null;
@@ -2893,9 +2999,10 @@ export function HostPage({
       }
       if (!audio) return;
       audio.setMicrophoneVolume(microphoneVolume);
-      const mixed = await audio.setMicrophone(enabled, deviceId);
+      const mixed = await audio.setMicrophone(enabled, deviceId, voiceProcessing);
       if (!isCurrentGeneration(generation) || hostAudioRef.current !== audio) return;
       setMicrophoneDevices(previous => ({ ...previous, browser: deviceId }));
+      setMicrophoneVoiceProcessing(voiceProcessing);
       if (mixed) await replaceBrowserStream(mixed, generation, token);
     } catch (error) {
       if (isCurrentGeneration(generation) && sourceSwitchRef.current === token) {
@@ -2916,7 +3023,7 @@ export function HostPage({
     const previousStream = streamRef.current;
     if (!previousStream) {
       captured.getTracks().forEach((track) => track.stop());
-      setNoticeKey("host.shareEnded", "share-ended", "off");
+      setStatusNotice({ key: "host.shareEnded" }, "share-ended", "off");
       return;
     }
 
@@ -3438,12 +3545,19 @@ export function HostPage({
               phase === "idle" || phase === "ended" || phase === "error"
             }
             label={t("host.stageAria")}
-            indicator={<StatusIndicator status={hostStatus.television}
-              label={statusNotice ? noticeText ?? undefined : undefined} />}
+            indicator={<>
+              <StatusIndicator status={hostStatus.television}
+                label={statusNotice ? noticeText ?? undefined : undefined} />
+              <span className="visually-hidden" role="status" aria-live="polite">
+                {statusNotice ? noticeText : null}
+              </span>
+            </>}
           >
             {stream ? (
               <video ref={videoRef} autoPlay muted playsInline />
             ) : null}
+            <RoomChatOverlay session={room ? interactionSession : null}
+              visible={phase === "live" && !nativeSources && !sharingPaused && !switchingSource && !localPreviewPaused} />
             {nativeSources ? (
               <CaptureSourcePicker
                 nativeSources={nativeSources}
@@ -3460,11 +3574,14 @@ export function HostPage({
                 selectionDisabled={roomMutating || switchingSource || changingQuality}
                 initialAudio={
                   nativeActive
-                    ? nativeSourceAudioRef.current ?? false
+                    ? nativeAudioSelectionRef.current?.exclude
+                      ? nativeAudioSelectionRef.current.enabled
+                      : nativeSourceAudioRef.current ?? false
                     : true
                 }
                 audioLocked={nativeActive && !nativeClientRef.current?.health.nativeMedia.microphone}
                 initialShowCaptureBorder={showCaptureBorder}
+                initialExcludeAudio={nativeAudioSelectionRef.current?.exclude}
               />
             ) : !stream &&
               (phase === "idle" || phase === "ended" || phase === "error") ? (
@@ -3588,6 +3705,7 @@ export function HostPage({
               icon="sliders"
               busy={changingQuality}
               cap="host.settings.button"
+
               title={showAdvanced ? "host.advanced.hide" : "host.advanced"}
               hint={showAdvanced ? "hint-collapse" : "hint-advanced"}
               tone={showAdvanced ? "on" : undefined}
@@ -3792,6 +3910,8 @@ export function HostPage({
                   native={nativeActive} loadDevices={loadMicrophones}
                   deviceId={microphoneDevices[nativeActive ? "native" : "browser"]}
                   onDevice={deviceId => void changeMicrophone(microphoneEnabled, deviceId)}
+                  voiceProcessing={microphoneVoiceProcessing}
+                  onVoiceProcessing={enabled => void changeMicrophone(microphoneEnabled, microphoneDevices.browser, enabled)}
                 />
               ) : null}
               <div className="lr-door-group">
@@ -3846,52 +3966,59 @@ export function HostPage({
                   <Cap k="host.advanced.route" />
                 </span>
                 <div className="lr-row-group">
-                  <SwitchItem
-                    checked={routePolicy.topologyOptimization}
-                    disabled={phase === "starting" || phase === "live"}
-                    onChange={(checked) =>
-                      changeRoutePolicy({ topologyOptimization: checked })
-                    }
-                    label={t("host.advanced.route.topo")}
-                    note={t("host.advanced.route.topoHint")}
-                    hint="hint-topology"
-                  />
-                  <SwitchItem
-                    checked={routePolicy.natPrediction}
-                    disabled={
-                      !natPredictionAvailable || phase === "starting" || phase === "live"
-                    }
-                    locked={!natPredictionAvailable}
-                    onChange={(checked) =>
-                      changeRoutePolicy({ natPrediction: checked })
-                    }
-                    label={t("host.advanced.route.natPrediction")}
-                    note={t(
-                      natPredictionAvailable
-                        ? "host.advanced.route.natPredictionHint"
-                        : "host.advanced.route.natPredictionUnavailable",
-                    )}
-                    hint={
-                      natPredictionAvailable ? "hint-nat-prediction" : "hint-nat-unavailable"
-                    }
-                  />
-                  <SwitchItem
-                    checked={routePolicy.peerOnly}
-                    disabled={
-                      !sfuAvailable || phase === "starting" || phase === "live"
-                    }
-                    locked={!sfuAvailable}
-                    onChange={(checked) =>
-                      changeRoutePolicy({ peerOnly: checked })
-                    }
-                    label={t("host.advanced.route.peerOnly")}
-                    note={t(
-                      sfuAvailable
-                        ? "host.advanced.route.peerOnlyHint"
-                        : "host.advanced.route.peerOnlyRequired",
-                    )}
-                    hint={sfuAvailable ? "hint-route-p2p" : "hint-route-p2p-required"}
-                  />
+                  {sfuOnly ? <SwitchItem checked disabled locked
+                    onChange={() => {}}
+                    label={t("host.advanced.route.sfuOnly")}
+                    note={t("host.advanced.route.sfuOnlyHint")}
+                    hint="hint-route-sfu"
+                  /> : <>
+                    <SwitchItem
+                      checked={routePolicy.topologyOptimization}
+                      disabled={phase === "starting" || phase === "live"}
+                      onChange={(checked) =>
+                        changeRoutePolicy({ topologyOptimization: checked })
+                      }
+                      label={t("host.advanced.route.topo")}
+                      note={t("host.advanced.route.topoHint")}
+                      hint="hint-topology"
+                    />
+                    <SwitchItem
+                      checked={routePolicy.natPrediction}
+                      disabled={
+                        !natPredictionAvailable || phase === "starting" || phase === "live"
+                      }
+                      locked={!natPredictionAvailable}
+                      onChange={(checked) =>
+                        changeRoutePolicy({ natPrediction: checked })
+                      }
+                      label={t("host.advanced.route.natPrediction")}
+                      note={t(
+                        natPredictionAvailable
+                          ? "host.advanced.route.natPredictionHint"
+                          : "host.advanced.route.natPredictionUnavailable",
+                      )}
+                      hint={
+                        natPredictionAvailable ? "hint-nat-prediction" : "hint-nat-unavailable"
+                      }
+                    />
+                    <SwitchItem
+                      checked={routePolicy.peerOnly}
+                      disabled={
+                        !sfuAvailable || phase === "starting" || phase === "live"
+                      }
+                      locked={!sfuAvailable}
+                      onChange={(checked) =>
+                        changeRoutePolicy({ peerOnly: checked })
+                      }
+                      label={t("host.advanced.route.peerOnly")}
+                      note={t(
+                        sfuAvailable
+                          ? "host.advanced.route.peerOnlyHint"
+                          : "host.advanced.route.peerOnlyRequired",
+                      )}
+                      hint={sfuAvailable ? "hint-route-p2p" : "hint-route-p2p-required"}
+                    />
+                  </>}
                 </div>
               </div>
               <div className="lr-door-group">
@@ -3932,7 +4059,7 @@ export function HostPage({
               </div>
             </>}
           />
-          <Couch
+          <RoomInteractions session={room ? interactionSession : null}
             view="host"
             host={{
               key: hostIdentity,
@@ -3966,9 +4093,9 @@ export function HostPage({
 
         <div className="lr-deck">
           <Row>
-            {room ? (
-              <RowGroup>
-                <FieldCap k="common.roomCode" />
+            <RowGroup>
+              <FieldCap k="common.roomCode" />
+              {room ? <>
                 <RoomChip
                   roomId={room.roomId}
                   onReplace={replaceCurrentRoom}
@@ -3980,8 +4107,8 @@ export function HostPage({
                     passwordEnabled={viewerPasswordEnabled}
                   />
                 ) : null}
-              </RowGroup>
-            ) : null}
+              </> : <RoomCodePlaceholder />}
+            </RowGroup>
             <span className="lr-spacer" />
             <div className="lr-host-personal-controls">
               <div className="lr-row-group lr-group-name lr-host-identity-slot">

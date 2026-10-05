@@ -7,7 +7,7 @@ owns ports and [self-hosting](../operations/self-hosting.md) owns service setup.
 
 ## Topology
 
-- Media is automatic and P2P-first. Users do not select parents, route types, or
+- Media is automatic and defaults to P2P-first. Users do not select parents, route types, or
   network transports.
 - The Host is the only source. Every Viewer has at most one active upstream, and
   the committed media graph is acyclic and source-reachable.
@@ -21,9 +21,17 @@ same bounded P2P graph without its SFU fallback and fixes Privacy mode on for al
 rooms, including App Local and public-link rooms. The server enforces that policy
 for waiting and active participants; there is no separate Host-star mode.
 
+A Hosted operator may require SFU-only media through `SFU_ONLY=true`. The same
+controller then admits only SFU candidates: no Peer parents, Viewer relays or
+background P2P convergence. The Host still publishes once, and every Viewer
+uses the existing SFU subscription ledger and first-frame commit. Capacity or
+connection failure never permits a Peer route. An explicitly peer-only share
+is rejected before acquiring media authority; it is never silently forwarded.
+The page advertises this site policy and hides inapplicable P2P preferences.
+
 ## Per-Share Route Policy
 
-The Host chooses route policy before sharing and it remains fixed for that
+On a P2P-first site, the Host chooses route policy before sharing and it remains fixed for that
 share generation:
 
 - when SFU is available, default hybrid mode keeps P2P first and permits the
@@ -38,7 +46,7 @@ share generation:
   a Site may use self-hosted 3478/3479/3480, Public Link uses its bounded public survey, and
   pure LAN supplies none. Its default-on Host switch augments Browser and Native
   P2P edges. This gate leaves ordinary ICE and Native gateway mapping enabled.
-  Native uses one media socket for IPv4 and, where available, IPv6
+  Each Native connection uses one media socket for IPv4 and, where available, IPv6
   direct connections; its STUN survey and best-effort gateway mapping use IPv4.
   Availability and background direct acquisition share a bounded budget of
   four actual connection attempts per eligible parent/session opportunity:
@@ -116,10 +124,27 @@ rebuilds that connection if necessary, within the existing two-request budget.
 Capable Native receivers also renegotiate that connection while retaining the
 encoded source, local playback and downstream edges when its codec/audio shape
 is unchanged. Pion owns ICE restart; each actual gathering owns fresh supplemental
-candidates. A changed media shape replaces the source and its dependent edges.
+candidates. Native STUN observations share only an in-flight transaction, never
+a completed address across gatherings. Discovery uses the existing media socket;
+retiring one gathering does not cancel another or close healthy media.
+A Native connection owns its UDP socket and optional gateway mapping. A new
+connection receives an independent socket; ICE restart retains the current one.
+Discovery and media must use that same connection-owned socket. Sharing a socket
+between physical connections can collapse an admitted overlap into one remote
+address/port, which Pion's UDP mux cannot demultiplex. Encoded sources remain
+shared; this isolation changes neither route authority nor copy capacity.
+A changed media shape replaces the source and its dependent edges.
 It does not require NAT prediction or reopen the route candidate. A prepared
 candidate instead follows its current route operation's failure path, without
 an independent restart loop.
+
+A Browser sender's subsequent audio-direction SDP transaction has a 15-second
+completion deadline. A lost offer/answer must not leave later microphone/source
+changes queued forever behind otherwise connected media. Timeout retires that
+exact edge through its existing preparation/recovery owner; coalesced changes
+do not renew the deadline. This also applies if audio changes during preparation.
+Initial acquisition and ICE restart retain their existing route/recovery deadlines;
+ordinary signaling loss without a pending media transaction preserves healthy media.
 
 When a newly committed Host-root Viewer exposes unused downstream capacity while
 another Host root has at least two direct children, the same background operation may
@@ -131,6 +156,11 @@ without admitted overlap.
 Framework reconnect runs before route reassignment. Manual media reconnect also
 recovers only the current P2P parent or current SFU subscription; it does not
 perform quality selection or choose another route.
+A Viewer that loses room signaling keeps its membership and committed edges for
+20 seconds, covering the nominal backoff for the Browser's first five reconnect
+attempts; connection and authentication time can extend those attempts.
+Reconnecting with the same client rebinds retained edges. Signaling absence alone does not
+retire a media edge before then; its route failure or that window's expiry does.
 Current-edge P2P signaling remains valid during candidate overlap. Accepting a
 replacement from that parent cancels conflicting optional preparation so the
 replacement can complete; a retired candidate cannot take its place afterward.
@@ -176,7 +206,13 @@ retain after those resources close. ADR-0005's graph and operation rules remain;
 
 Transient room-signaling loss does not close healthy SFU media. The current
 physical connection can restart ICE; actual terminal media failure returns to
-the same bounded route recovery. Source capture remains Host-owned throughout.
+the same bounded route recovery, identifying the failed physical connection.
+An active configuration describes that connection; it cannot create a replacement
+Browser subscriber. Replacement needs the controller's prepared subscription and
+first-frame proof. Reauthentication during an unfinished restart also returns
+that subscription to its route owner; sending an answer is not connection proof.
+An exhausted opportunity remains an explicit failure until an eligible new fact
+reopens acquisition. Source capture remains Host-owned throughout.
 
 ## Quality And Privacy Boundaries
 

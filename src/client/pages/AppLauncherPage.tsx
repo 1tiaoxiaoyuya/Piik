@@ -46,6 +46,7 @@ export function AppLauncherPage() {
   const [debug, setDebug] = useState(false);
   const [lan, setLan] = useState<z.infer<typeof launcherStateSchema>["lan"]>();
   const [update, setUpdate] = useState<ReleaseUpdateNotice | null>(null);
+  const [version, setVersion] = useState<string>();
 
   useEffect(() => {
     let current = true;
@@ -57,6 +58,7 @@ export function AppLauncherPage() {
       .then((state) => {
         if (!current) return;
         setMode(state.defaultMode);
+        setVersion(state.version);
         setSite(state.site);
         setLocalAccessPassword(state.localAccessPassword);
         setAppDebug(state.debug);
@@ -131,7 +133,7 @@ export function AppLauncherPage() {
   const updateText = update ? `${t(updateKey)} · ${update.version}` : "";
   const updateLink = update ? (
     <a
-      className="lr-client-update"
+      className="lr-btn lr-client-update"
       href={update.url}
       target="_blank"
       rel="noopener noreferrer"
@@ -177,6 +179,7 @@ export function AppLauncherPage() {
           </div>
         ) : (
           <LauncherForm
+            version={version}
             mode={mode}
             site={site}
             localAccessPassword={localAccessPassword}

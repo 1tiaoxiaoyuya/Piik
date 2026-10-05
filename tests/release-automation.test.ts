@@ -5,13 +5,57 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { releaseNotes } from "../scripts/release-notes.mjs";
+import { pullRequestNotes, releaseNotes } from "../scripts/release-notes.mjs";
 
 const planner = fileURLToPath(new URL("../scripts/release-version.mjs", import.meta.url));
 const publisher = fileURLToPath(new URL("../scripts/publish-release.mjs", import.meta.url));
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 
 describe("release automation", () => {
+  it("validates the PR body against its net product diff before the squash", () => {
+    const root = mkdtempSync(join(tmpdir(), "piik-pr-notes-"));
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+    const commit = () => { git("add", "."); git("commit", "-m", "checkpoint without release notes"); return git("rev-parse", "HEAD"); };
+    try {
+      git("init", "--quiet", "--initial-branch=main");
+      git("config", "user.name", "Piik fixture");
+      git("config", "user.email", "fixture@example.invalid");
+      git("config", "commit.gpgSign", "false");
+      mkdirSync(join(root, "public"));
+      mkdirSync(join(root, "site"));
+      writeFileSync(join(root, "public/asset.svg"), "art");
+      const base = commit();
+      writeFileSync(join(root, "README.md"), "guide");
+      const docs = commit();
+      const event = { pull_request: { number: 1, base: { sha: base }, head: { sha: docs }, body: "" } };
+      expect(pullRequestNotes(root, event)).toBe("");
+      // Moving a product file out is still a deletion from the shipped surface.
+      git("mv", "public/asset.svg", "site/asset.svg");
+      event.pull_request.head.sha = commit();
+      expect(() => pullRequestNotes(root, event)).toThrow("one nonempty");
+      for (const body of ["## Release notes\n???", "## Release notes\n\uFFFD"]) {
+        event.pull_request.body = body;
+        expect(() => pullRequestNotes(root, event)).toThrow("damaged");
+      }
+      event.pull_request.body = "## Release notes\nOne\n## Release notes\nTwo";
+      expect(() => pullRequestNotes(root, event)).toThrow("one nonempty");
+      event.pull_request.body = "## Implementation\nprivate detail\n## Release notes\n修复分享 / Sharing fixes.\nLiteral `code` and $(text).";
+      expect(pullRequestNotes(root, event)).toBe("修复分享 / Sharing fixes.\nLiteral `code` and $(text).");
+      const eventFile = join(root, "event.json");
+      writeFileSync(join(root, ".git/info/exclude"), "event.json\n");
+      writeFileSync(eventFile, JSON.stringify(event));
+      const script = fileURLToPath(new URL("../scripts/release-notes.mjs", import.meta.url));
+      expect(execFileSync(process.execPath, [script, "--pull-request"], {
+        cwd: root, encoding: "utf8", env: { ...process.env, GITHUB_EVENT_PATH: eventFile },
+      })).toContain("validated");
+      // Reverting the product change leaves a documentation-only PR.
+      git("mv", "site/asset.svg", "public/asset.svg");
+      event.pull_request.head.sha = commit();
+      event.pull_request.body = "";
+      expect(pullRequestNotes(root, event)).toBe("");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }, 15_000);
+
   it("publishes reviewed notes, excludes private history and retains every unreleased phase on retries", () => {
     const root = mkdtempSync(join(tmpdir(), "piik-release-notes-"));
     const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
@@ -59,6 +103,11 @@ describe("release automation", () => {
         git("checkout", "--quiet", "--detach", next);
         const invalid = commit(`chore: maintenance\n\n${section}`);
         expect(() => releaseNotes(root, "v1.1.1", invalid, "fixture/Piik")).toThrow("one nonempty");
+      }
+      for (const damaged of ["????????????", "Updated \uFFFD capture"]) {
+        git("checkout", "--quiet", "--detach", next);
+        const invalid = commit(`fix: capture\n\n## Release notes\n${damaged}`);
+        expect(() => releaseNotes(root, "v1.1.1", invalid, "fixture/Piik")).toThrow("damaged Release notes");
       }
     } finally { rmSync(root, { recursive: true, force: true }); }
   }, 15_000); // Real Git subprocesses share the runner with the rest of the suite.
@@ -115,7 +164,7 @@ describe("release automation", () => {
       expect(reused.status).not.toBe(0);
       expect(reused.stderr).toContain("two source revisions");
     } finally { rmSync(root, { recursive: true, force: true }); }
-  });
+  }, 15_000); // Real Git subprocesses share the runner with the rest of the suite.
 
   it("keeps shipped assets, build inputs and moves across the website boundary release-worthy", () => {
     const root = mkdtempSync(join(tmpdir(), "piik-release-paths-"));
@@ -162,19 +211,20 @@ describe("release automation", () => {
     const revision = "a".repeat(40);
     const run = () => spawnSync(process.execPath, [publisher, root, version, revision, "--dry-run"], { encoding: "utf8" });
     try {
-      for (const target of ["server", "windows-amd64", "linux-amd64", "darwin-arm64"]) {
-        const artifact = `${target}.${target === "server" ? "tar.gz" : "zip"}`;
+      for (const target of ["server", "server-linux-arm64", "windows-amd64", "linux-amd64", "linux-arm64", "darwin-arm64", "darwin-amd64"]) {
+        const server = target.startsWith("server");
+        const artifact = `${target}.${server ? "tar.gz" : "zip"}`;
         writeFileSync(join(root, artifact), target);
         const descriptor = { schema: 2, version, revision, artifact, artifactSha256: sha(target),
-          ...(target === "server" ? { manifest: "server.manifest.tsv", manifestSha256: sha("manifest") } : { target }) };
+          target, ...(server ? { manifest: `${target}.manifest.tsv`, manifestSha256: sha("manifest") } : {}) };
         writeFileSync(join(root, `${target}.release.json`), JSON.stringify(descriptor));
-        if (target === "server") writeFileSync(join(root, "server.manifest.tsv"), "manifest");
+        if (server) writeFileSync(join(root, `${target}.manifest.tsv`), "manifest");
         else writeFileSync(join(root, `${artifact}.sha256`), `${sha(target)}  ${artifact}\n`);
       }
       const complete = run();
       expect(complete.status, complete.stderr).toBe(0);
-      expect(JSON.parse(complete.stdout).targets).toHaveLength(4);
-      expect(JSON.parse(complete.stdout).files).toBe(4);
+      expect(JSON.parse(complete.stdout).targets).toHaveLength(7);
+      expect(JSON.parse(complete.stdout).files).toBe(7);
       const checksum = join(root, "windows-amd64.zip.sha256");
       const originalChecksum = readFileSync(checksum, "utf8");
       writeFileSync(checksum, "wrong checksum");

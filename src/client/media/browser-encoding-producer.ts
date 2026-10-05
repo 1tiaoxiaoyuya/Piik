@@ -1,13 +1,15 @@
+import { parse, write } from "sdp-transform";
 import { createOpaqueId } from "../lib/opaque-id";
 import { debugError, debugEvent } from "../lib/debug";
 import { debugRtcFailure, debugRtcStats, debugTrack, observeDebugConnection } from "../lib/debug-webrtc";
 import { addRemoteIceCandidate } from "../webrtc/nat-prediction";
 import { encodedStreams } from "./browser-encoding-output";
 import {
-  applyVideoCaptureProfile, cloneSenderVideoTrack, configureVideoSender,
+  applyVideoCaptureProfile, configureVideoSender,
   needsStartupVideoProfile, startupVideoProfile, STARTUP_VIDEO_ENCODED_FRAMES,
   videoQualitySettingsEqual, type QualityProfile,
 } from "./quality";
+import { cloneSenderVideoTrack, stopSenderVideoTrack } from "./sender-video-track";
 
 // Leave time for ordinary encoding before the outer Viewer/route deadline.
 // Bound local transport setup, not frame production from a quiet source.
@@ -53,7 +55,7 @@ export class BrowserEncodingProducer {
     this.budget = initialBudget;
     try {
       if (this.source.readyState !== "live") throw new Error("Browser encoding source ended");
-      const track = this.input = cloneSenderVideoTrack(this.source);
+      const track = this.input = cloneSenderVideoTrack(this.source, () => this.fail());
       track.enabled = !this.paused;
       this.source.addEventListener("ended", this.fail);
       track.addEventListener("ended", this.fail);
@@ -118,7 +120,7 @@ export class BrowserEncodingProducer {
       await receive.setRemoteDescription(send.localDescription!);
       await flushReceive();
       this.checkAlive();
-      await receive.setLocalDescription(await receive.createAnswer());
+      await receive.setLocalDescription(this.seedLocalAnswer(await receive.createAnswer()));
       this.checkAlive();
       await send.setRemoteDescription(receive.localDescription!);
       await flushSend();
@@ -181,7 +183,7 @@ export class BrowserEncodingProducer {
     debugEvent("encoding-pool", "producer-retired", { producerId: this.id });
     this.source.removeEventListener("ended", this.fail);
     this.input?.removeEventListener("ended", this.fail);
-    this.input?.stop();
+    stopSenderVideoTrack(this.input);
     this.streamAbort.abort();
     void this.streamWriter?.abort().catch(() => undefined);
     this.streamWriter = null;
@@ -214,6 +216,25 @@ export class BrowserEncodingProducer {
     this.checkAlive();
     if (!this.videoSender) throw new Error("Browser encoding producer has not started");
     return this.videoSender;
+  }
+
+  private seedLocalAnswer(answer: RTCSessionDescriptionInit): RTCSessionDescriptionInit {
+    const kbps = Math.floor(Math.min(this.budget, this.desiredProfile.maxBitrate) / 1_000);
+    if (!Number.isFinite(kbps) || kbps <= 0 || !answer.sdp) return answer;
+    const session = parse(answer.sdp);
+    const media = session.media.find((section) => section.type === "video" && section.port !== 0);
+    const codec = media?.rtp.find((entry) => `video/${entry.codec}`.toLowerCase() === this.codec.mimeType.toLowerCase());
+    if (!media || !codec) return answer;
+    const format = media.fmtp.find((entry) => entry.payload === codec.payload);
+    const parameters = (format?.config ?? "").split(";").map((part) => part.trim())
+      .filter((part) => part && !/^x-google-start-bitrate\s*=/i.test(part));
+    parameters.push(`x-google-start-bitrate=${kbps}`);
+    if (format) format.config = parameters.join(";");
+    else media.fmtp.push({ payload: codec.payload, config: parameters.join(";") });
+    // This same-Browser encoder already has a downstream native allocation.
+    // WebRTC reads send rates from the remote answer; an offer hint is dropped.
+    // Seed once, without a minimum or an external SDP/codec-identity change.
+    return { ...answer, sdp: write(session) };
   }
 
   private async applyCurrent(): Promise<void> {

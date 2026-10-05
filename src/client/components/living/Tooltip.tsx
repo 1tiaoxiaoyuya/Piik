@@ -294,15 +294,17 @@ export function Tooltip({
     if (!interactionOpen) return;
     // Hover does not move keyboard focus into the trigger.
     const dismiss = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      if (event.key !== "Escape" || event.isComposing) return;
       // Close every hint channel, including a hover panel suppressed by a
       // focused neighbour. Only visible guidance consumes the outer action.
       const style = tipRef.current && getComputedStyle(tipRef.current);
       if (style?.visibility === "visible" && style.pointerEvents !== "none") event.preventDefault();
       dismissPanel();
     };
-    document.addEventListener("keydown", dismiss);
-    return () => document.removeEventListener("keydown", dismiss);
+    // Guidance consumes Escape before its containing window, regardless of
+    // which surface mounted first. Outer handlers respect defaultPrevented.
+    document.addEventListener("keydown", dismiss, true);
+    return () => document.removeEventListener("keydown", dismiss, true);
   }, [interactionOpen]);
 
   useEffect(() => {
@@ -371,6 +373,7 @@ export function Tooltip({
       ref={wrapRef}
       className={`lr-comic-tip-wrap${className ? ` ${className}` : ""}${toggleOnClick ? " is-help-only" : ""}${disabledTrigger ? " is-disabled-trigger" : ""}${hoverOpen ? " is-hover-open" : ""}${focusOpen ? " is-focus-open" : ""}${pressOpen ? " is-tip-open" : ""}`}
       tabIndex={focusableWrap ? 0 : undefined}
+      role={focusableWrap ? "group" : undefined}
       aria-label={disabledTriggerLabel ?? (focusableWrap ? trigger?.props["aria-label"] ?? overflow?.text : undefined)}
       aria-describedby={disabledTrigger && caption && interactionOpen ? tooltipId : undefined}
       onPointerEnter={(event) => {

@@ -22,6 +22,11 @@ const AUDIO_PROBE = `(() => {
   window.RTCPeerConnection = class extends BrowserPeer {
     constructor(...args) { super(...args); peers.push(this); }
   };
+  window.__piikGateMediaStats = async () => Promise.all(peers.map(async peer => ({
+    state: peer.connectionState,
+    stats: Array.from((await peer.getStats()).values()).filter(row =>
+      ['media-source','outbound-rtp','inbound-rtp','candidate-pair'].includes(row.type))
+  })));
   window.__piikGateAudioEnergy = async () => {
     const trackId = document.querySelector('video')?.srcObject?.getAudioTracks()[0]?.id;
     const diagnostic = window.__piikGateAudioStats = { hasAudioTrack: !!trackId, peerCount: peers.length, inbound: [] };
@@ -60,6 +65,9 @@ async function main(): Promise<void> {
   const chromePath = process.env.CHROME_PATH?.trim();
   if (!chromePath) throw new Error("CHROME_PATH is required");
   const nativeArm = process.env.PIIK_EMBEDDED_SFU_NATIVE === "true";
+  const sfuOnly = process.env.PIIK_EMBEDDED_SFU_ONLY === "true";
+  const displayArm = process.env.PIIK_EMBEDDED_SFU_DISPLAY === "true";
+  if (displayArm && nativeArm) throw new Error("Display and Native capture are separate arms");
   const twoRooms = process.env.PIIK_EMBEDDED_SFU_TWO_ROOMS === "true";
   if (twoRooms && !nativeArm) throw new Error("Two-room arm requires Native publication");
   const codec = process.env.PIIK_EMBEDDED_SFU_CODEC?.trim() || "vp8";
@@ -85,15 +93,18 @@ async function main(): Promise<void> {
   const profile = await mkdtemp(join(tmpdir(), "piik-client-media-"));
   const sourceProfile = nativeArm ? await mkdtemp(join(tmpdir(), "piik-client-media-")) : null;
   const [sourcePort, sourceDebugPort] = nativeArm ? [await reservePort(), await reservePort()] : [0, 0];
-  const result = { passed: false, arm: `${nativeArm ? "native" : "browser"}-${codec}-simulcast${twoRooms ? "-two-rooms" : ""}`, stage: "start",
+  const result = { passed: false, arm: `${nativeArm ? "native" : displayArm ? "display" : "browser"}-${codec}-simulcast${twoRooms ? "-two-rooms" : ""}`, stage: "start",
+    sfuOnly, stereoSeparationDb: null as number[] | null,
     startedAt: new Date().toISOString(), finishedAt: "", processes: [] as Array<{ role: string; pid: number | null }>,
     high: null as { frames: number; width: number; height: number } | null,
     low: null as { frames: number; width: number; height: number } | null,
-    audioEnergy: { high: 0, low: 0 },
+    audioEnergy: { high: 0, low: 0, recovered: 0 },
     audioDiagnostics: null as unknown,
     secondRoom: twoRooms ? { connected: false, framesAfterFirstStopped: 0, audioBefore: 0, audioAfter: 0, stopped: false } : null,
     host: null as Snapshot | null, viewer: null as Snapshot | null,
-    publicationRetired: false, nativeShareStopped: !nativeArm, udpReleased: false, cleanup: false, error: null as string | null };
+    displayLifecycle: null as { hiddenFrames: number; hiddenElapsedMs: number; lowLayerDecoded: boolean; resumed: boolean; replaced: boolean } | null,
+    mediaDiagnostics: null as unknown,
+    publicationRetired: false, subscriptionRecovered: false, nativeShareStopped: !nativeArm, udpReleased: false, cleanup: false, error: null as string | null };
   let server: ChildProcessWithoutNullStreams | null = null;
   let chrome: ChildProcessWithoutNullStreams | null = null;
   let vite: ViteDevServer | null = null;
@@ -132,13 +143,15 @@ async function main(): Promise<void> {
   try {
     server = spawn(binary, [], { cwd: ROOT, stdio: "pipe", windowsHide: true,
       env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot,
-        PIIK_ENV: "development", LISTEN_HOST: "127.0.0.1", PORT: String(serverPort),
+        PIIK_ENV: "development", PIIK_DEBUG: "route", LISTEN_HOST: "127.0.0.1", PORT: String(serverPort),
+        PIIK_LOG_DIR: join(BUILD_ROOT, "logs"),
         PUBLIC_BASE_URL: origin, ALLOWED_ORIGINS: origin,
-        SFU_LISTEN_HOST: "127.0.0.1", SFU_UDP_PORT: String(mediaPort), SFU_PUBLIC_IP: "127.0.0.1" },
+        SFU_LISTEN_HOST: "127.0.0.1", SFU_UDP_PORT: String(mediaPort), SFU_PUBLIC_IP: "127.0.0.1",
+        SFU_ONLY: String(sfuOnly) },
     });
     processStarted("server", server);
     server.stdout.resume();
-    server.stderr.on("data", (data: Buffer) => { serverError = (serverError + data.toString()).slice(-2000); });
+    server.stderr.on("data", (data: Buffer) => { serverError = (serverError + data.toString()).slice(-16000); });
     await waitForSample((deadline) => fetchJsonBefore<{ status: string }>(`${backend}/healthz`, deadline),
       () => true, 15_000);
     vite = await createViteServer({ root: ROOT, configFile: false, appType: "custom", logLevel: "silent",
@@ -146,6 +159,15 @@ async function main(): Promise<void> {
         proxy: { "/api": { target: backend }, "/signal": { target: backend, ws: true } } },
       plugins: [{ name: "embedded-sfu-gate", configureServer(instance) {
         instance.middlewares.use((request, response, next) => {
+          if (request.url === "/embedded-sfu-source") {
+            response.setHeader("Content-Type", "text/html; charset=utf-8");
+            response.end(`<!doctype html><title>Piik SFU captured source</title><style>body{margin:0}canvas{width:100vw;height:100vh}</style>
+              <canvas width="1280" height="720"></canvas><script>
+              const canvas=document.querySelector('canvas'),ctx=canvas.getContext('2d');let n=0;
+              function draw(){ctx.fillStyle='#167d8d';ctx.fillRect(0,0,1280,720);ctx.fillStyle='#f2d748';
+                ctx.fillRect((n++*17)%1280,60,100,100);requestAnimationFrame(draw)}draw();</script>`);
+            return;
+          }
           if (request.url !== "/embedded-sfu-gate") return next();
           response.setHeader("Content-Type", "text/html; charset=utf-8");
           response.end("<!doctype html><html><head><title>Embedded SFU acceptance</title></head><body></body></html>");
@@ -183,8 +205,9 @@ async function main(): Promise<void> {
     chrome = await launchChrome(chromePath, debugPort, profile, [
       "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
       "--disable-extensions", "--disable-background-networking", "--autoplay-policy=no-user-gesture-required",
-      "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows",
-      "--disable-renderer-backgrounding", "--disable-features=WebRtcHideLocalIpsWithMdns",
+      ...(displayArm ? ["--auto-select-tab-capture-source-by-title=Piik SFU captured source"] : [
+        "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding"]),
+      "--disable-features=WebRtcHideLocalIpsWithMdns",
     ]);
     processStarted("decoder-browser", chrome);
     chrome.stdout.resume();
@@ -199,12 +222,17 @@ async function main(): Promise<void> {
     if (!gatePage.ok || !(await gatePage.text()).includes("Embedded SFU acceptance")) {
       throw new Error("Local SFU gate page is unavailable");
     }
-    host = await createPage(cdp, `${origin}/embedded-sfu-gate`);
+    if (displayArm) {
+      const sourcePage = await createPage(cdp, `${origin}/embedded-sfu-source`);
+      await cdp.call("Emulation.setDeviceMetricsOverride", { width: 1280, height: 720,
+        deviceScaleFactor: 1, mobile: false }, sourcePage.sessionId, Date.now() + 3_000);
+    }
+    host = await createPage(cdp, `${origin}/embedded-sfu-gate`, AUDIO_PROBE);
     viewer = await createPage(cdp, `${origin}/embedded-sfu-gate`, AUDIO_PROBE);
     result.stage = "authenticate";
     const room = await call<CreateRoomResponse>(host, nativeArm
       ? `gate.startHost(${JSON.stringify({ title: SOURCE_TITLE, port: nativePort })}, ${JSON.stringify(codec)})`
-      : `gate.startHost(undefined, ${JSON.stringify(codec)})`);
+      : `gate.startHost(undefined, ${JSON.stringify(codec)}, ${displayArm})`);
     await until(host, (value) => value.authenticated);
     await call(viewer, `gate.startViewer(${JSON.stringify(room)})`);
     result.stage = "simulcast-first-frame";
@@ -232,7 +260,36 @@ async function main(): Promise<void> {
     result.stage = "decoded-audio-energy";
     await waitForSample(() => call<number>(viewer!, "gate.audioEnergy()", 3_000),
       (energy) => { result.audioEnergy.high = energy; return energy > 0; }, 5_000);
+    if (!nativeArm) result.stereoSeparationDb = await call(viewer, "gate.audioSeparation()", 5_000);
     result.host = await call(host, "gate.snapshot()");
+    if (displayArm) {
+      result.stage = "display-background";
+      if (result.host!.capture?.displaySurface !== "browser" || result.host!.visibility !== "hidden") {
+        throw new Error("Gate must capture a separate real tab with the Host hidden");
+      }
+      const hiddenStart = Date.now();
+      const hidden = await call<{ frames: number }>(viewer, "gate.waitForFrames(1280, 720, 150)", 32_000);
+      result.displayLifecycle = { hiddenFrames: hidden.frames, hiddenElapsedMs: Date.now() - hiddenStart,
+        lowLayerDecoded: false, resumed: false, replaced: false };
+      result.mediaDiagnostics = await Promise.all([host, viewer].map(page =>
+        evaluate(cdp!, page, "window.__piikGateMediaStats()", Date.now() + 3_000)));
+      result.stage = "display-layer-demand";
+      await call(host, "gate.demandLayers(1)");
+      await call(viewer, "gate.waitForFrames(640, 360)");
+      result.displayLifecycle.lowLayerDecoded = true;
+      await call(host, "gate.demandLayers(2)");
+      await call(viewer, "gate.waitForFrames(1280, 720)");
+      result.stage = "display-pause-resume";
+      await call(host, "gate.pause(true)");
+      await new Promise(resolve => setTimeout(resolve, 500));
+      await call(host, "gate.pause(false)");
+      await call(viewer, "gate.waitForFrames(1280, 720)");
+      result.displayLifecycle.resumed = true;
+      result.stage = "display-source-replacement";
+      if (!await call<boolean>(host, "gate.replaceSource()")) throw new Error("Display source replacement failed");
+      await call(viewer, "gate.waitForFrames(1280, 720)");
+      result.displayLifecycle.replaced = true;
+    }
     result.stage = "live-profile";
     if (!await call<boolean>(host, "gate.lowerProfile()")) {
       result.host = await call(host, "gate.snapshot()");
@@ -241,6 +298,18 @@ async function main(): Promise<void> {
     result.low = await call(viewer, "gate.waitForFrames(854, 480)");
     await waitForSample(() => call<number>(viewer!, "gate.audioEnergy()", 3_000),
       (energy) => { result.audioEnergy.low = energy; return energy > result.audioEnergy.high; }, 5_000);
+    result.stage = "committed-subscription-recovery";
+    const previousSubscription = await call<string>(viewer, "gate.failSubscription()");
+    // Terminal failure consumes this exact opportunity. A new authenticated
+    // session reopens acquisition; configuration refresh alone cannot do so.
+    await until(viewer, value => value.routeStatus === "failed");
+    await call(viewer, `gate.reconnectViewer(${JSON.stringify(room)})`);
+    await until(viewer, value => value.committed && value.connectionId !== previousSubscription && value.audioKbps > 0);
+    await call(viewer, "gate.waitForFrames(854, 480)");
+    await waitForSample(() => call<number>(viewer!, "gate.audioEnergy()", 3_000),
+      energy => { result.audioEnergy.recovered = energy; return energy > 0; }, 5_000);
+    result.viewer = await call(viewer, "gate.snapshot()");
+    result.subscriptionRecovered = true;
     result.stage = "publication-retirement";
     await call(host, "gate.stopSharing()");
     await until(host, (value) => value.publicationRetired);
@@ -265,9 +334,12 @@ async function main(): Promise<void> {
     }
   } catch (error) {
     result.error = error instanceof Error ? error.message : String(error);
+    if (cdp) result.mediaDiagnostics = await Promise.all([host, viewer].map(page => page ?
+      evaluate(cdp!, page, "window.__piikGateMediaStats?.()", Date.now() + 3_000).catch(() => null) : null));
+    if (viewer && cdp) result.viewer = await call<Snapshot>(viewer, "gate.snapshot()", 3_000).catch(() => null);
     if (viewer && cdp && result.stage === "decoded-audio-energy") result.audioDiagnostics = await evaluate(
       cdp, viewer, "window.__piikGateAudioStats ?? null", Date.now() + 3_000).catch(() => null);
-    if (server?.exitCode !== null && serverError) result.error += `; server: ${serverError}`;
+    if (serverError) result.error += `; server: ${serverError}`;
   } finally {
     const pagesStopped = await Promise.all([host, viewer, secondHost, secondViewer].map((page) =>
       page && cdp ? call<boolean>(page, "gate.stop()", 5_000).catch(() => false) : true));
@@ -289,10 +361,14 @@ async function main(): Promise<void> {
   }
   result.finishedAt = new Date().toISOString();
   result.passed = !result.error && result.host?.published === true && result.host.simulcast &&
-    result.viewer?.decoded === true && result.viewer.committed && result.viewer.peerFailures > 0 &&
+    result.viewer?.decoded === true && result.viewer.committed &&
+    (sfuOnly ? result.viewer.peerFailures === 0 : result.viewer.peerFailures > 0) &&
+    (nativeArm || result.stereoSeparationDb?.every(db => db > 20) === true) &&
     result.viewer.audioKbps > 0 && result.audioEnergy.high > 0 && result.audioEnergy.low > result.audioEnergy.high &&
-    result.high !== null && result.low !== null &&
-    result.publicationRetired && result.cleanup && result.nativeShareStopped &&
+    result.high !== null && result.low !== null && result.audioEnergy.recovered > 0 &&
+    result.publicationRetired && result.subscriptionRecovered && result.cleanup && result.nativeShareStopped &&
+    (!displayArm || result.displayLifecycle?.hiddenFrames === 150 && result.displayLifecycle.lowLayerDecoded &&
+      result.displayLifecycle.resumed && result.displayLifecycle.replaced) &&
     (!result.secondRoom || result.secondRoom.connected && result.secondRoom.framesAfterFirstStopped >= 30 &&
       result.secondRoom.audioBefore > 0 && result.secondRoom.audioAfter > result.secondRoom.audioBefore && result.secondRoom.stopped) &&
     (!nativeArm || result.host.nativeShareStarted && result.host.nativeFramesPerSecond > 0 && result.host.nativeBitrateKbps > 0 && result.host.nativeEncodingCount === 2);

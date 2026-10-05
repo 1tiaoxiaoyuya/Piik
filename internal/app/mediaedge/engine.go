@@ -3,28 +3,22 @@ package mediaedge
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net"
-	"net/netip"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
-	"github.com/TNTcraftHIM/Piik/internal/app/portmapping"
 	"github.com/TNTcraftHIM/Piik/internal/diagnostics"
 	"github.com/TNTcraftHIM/Piik/internal/media/encoded"
 	"github.com/TNTcraftHIM/Piik/internal/media/forwarding"
-	"github.com/pion/ice/v4"
 	"github.com/pion/interceptor"
 	"github.com/pion/rtcp"
-	"github.com/pion/stun/v3"
 	"github.com/pion/webrtc/v4"
 )
 
-const H264ProfileLevelID = "42c033"
-const stunSurveyTimeout = 5 * time.Second
+// Use the browser-standard spelling of Constrained Baseline in SDP. Pion's
+// codec ordering prefers literal profile matches over equivalent constraint bits.
+const H264ProfileLevelID = "42e033"
 
 var h264Capability = webrtc.RTPCodecCapability{
 	MimeType:    webrtc.MimeTypeH264,
@@ -58,12 +52,12 @@ type EngineOptions struct {
 }
 
 type Engine struct {
-	api            *webrtc.API
+	media          *webrtc.MediaEngine
+	interceptors   *interceptor.Registry
 	settings       webrtc.SettingEngine
-	mux            *ice.UniversalUDPMuxDefault
-	listenAddress  string
-	localPort      int
-	portMapping    *portmapping.Mapping
+	bindAddress    string
+	portMapping    bool
+	listenPacket   func(string, string) (net.PacketConn, error)
 	initialBitrate int
 	ctx            context.Context
 	cancel         context.CancelFunc
@@ -71,6 +65,7 @@ type Engine struct {
 	mu           sync.Mutex
 	edges        map[*Edge]struct{}
 	publications map[*Publication]struct{}
+	sockets      map[*iceSocket]struct{}
 	closed       bool
 }
 
@@ -79,44 +74,27 @@ func NewEngine(options EngineOptions) (*Engine, error) {
 	if bindAddress == "" {
 		bindAddress = ":0"
 	}
-	// Go keeps wildcard UDP on one dual-stack socket where supported.
-	// Concrete IPv4 bindings remain IPv4-only.
-	address, err := net.ResolveUDPAddr("udp", bindAddress)
-	if err != nil {
+	if _, err := net.ResolveUDPAddr("udp", bindAddress); err != nil {
 		return nil, errors.New("native media UDP bind address is invalid")
 	}
-	connection, err := net.ListenUDP("udp", address)
-	if err != nil {
-		return nil, errors.New("native media UDP socket is unavailable")
-	}
 	loggerFactory := diagnostics.PionLoggerFactory()
-	ready := make(chan struct{})
-	mux := ice.NewUniversalUDPMuxDefault(ice.UniversalUDPMuxParams{
-		Logger:  loggerFactory.NewLogger("piik-ice"),
-		UDPConn: &initializingUDPConn{UDPConn: connection, ready: ready},
-	})
-	close(ready)
 	settingEngine := webrtc.SettingEngine{LoggerFactory: loggerFactory}
-	settingEngine.SetICEUDPMux(mux)
 	settingEngine.SetIncludeLoopbackCandidate(options.IncludeLoopback)
 
 	mediaEngine := &webrtc.MediaEngine{}
 	for _, codec := range []string{"h264", "vp8"} {
-		if err = mediaEngine.RegisterCodec(videoCodecs[codec], webrtc.RTPCodecTypeVideo); err != nil {
-			_ = mux.Close()
+		if err := mediaEngine.RegisterCodec(videoCodecs[codec], webrtc.RTPCodecTypeVideo); err != nil {
 			return nil, err
 		}
 	}
-	if err = mediaEngine.RegisterCodec(webrtc.RTPCodecParameters{
+	if err := mediaEngine.RegisterCodec(webrtc.RTPCodecParameters{
 		RTPCodecCapability: opusCapability,
 		PayloadType:        111,
 	}, webrtc.RTPCodecTypeAudio); err != nil {
-		_ = mux.Close()
 		return nil, err
 	}
 	registry := &interceptor.Registry{}
-	if err = webrtc.RegisterDefaultInterceptors(mediaEngine, registry); err != nil {
-		_ = mux.Close()
+	if err := webrtc.RegisterDefaultInterceptors(mediaEngine, registry); err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -124,127 +102,20 @@ func NewEngine(options EngineOptions) (*Engine, error) {
 		options.InitialBitrate = defaultNativeSourceInitialBitrate
 	}
 	engine := &Engine{
-		api: webrtc.NewAPI(
-			webrtc.WithMediaEngine(mediaEngine),
-			webrtc.WithInterceptorRegistry(registry),
-			webrtc.WithSettingEngine(settingEngine),
-		),
-		mux:            mux,
+		media:          mediaEngine,
+		interceptors:   registry,
 		settings:       settingEngine,
-		listenAddress:  connection.LocalAddr().String(),
-		localPort:      connection.LocalAddr().(*net.UDPAddr).Port,
+		bindAddress:    bindAddress,
+		listenPacket:   net.ListenPacket,
+		portMapping:    options.PortMapping,
 		initialBitrate: options.InitialBitrate,
 		ctx:            ctx,
 		cancel:         cancel,
 		edges:          make(map[*Edge]struct{}),
 		publications:   make(map[*Publication]struct{}),
-	}
-	if options.PortMapping {
-		engine.portMapping = portmapping.Start(connection.LocalAddr().(*net.UDPAddr).Port)
+		sockets:        make(map[*iceSocket]struct{}),
 	}
 	return engine, nil
-}
-
-// Pion starts its reader before publishing the embedded UDP mux. Both receive
-// paths wait for construction; the AddrPort interface preserves its fast path.
-type initializingUDPConn struct {
-	*net.UDPConn
-	ready <-chan struct{}
-}
-
-var _ ice.AddrPortReaderWriter = (*initializingUDPConn)(nil)
-
-func (connection *initializingUDPConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
-	<-connection.ready
-	return connection.UDPConn.ReadFrom(buffer)
-}
-
-func (connection *initializingUDPConn) ReadFromAddrPort(buffer []byte) (int, netip.AddrPort, error) {
-	<-connection.ready
-	return connection.UDPConn.ReadFromUDPAddrPort(buffer)
-}
-
-func (connection *initializingUDPConn) WriteToAddrPort(buffer []byte, address netip.AddrPort) (int, error) {
-	return connection.UDPConn.WriteToUDPAddrPort(buffer, address)
-}
-
-type mappedAddress struct {
-	address string
-	port    int
-}
-
-func (engine *Engine) surveySTUN(
-	ctx context.Context,
-	servers []webrtc.ICEServer,
-	emit func(mappedAddress),
-) {
-	surveyContext, cancel := context.WithTimeout(ctx, stunSurveyTimeout)
-	defer cancel()
-	// One survey retains its resolver even while canceled workers are settling.
-	resolver := net.DefaultResolver
-	results := make(chan mappedAddress)
-	var pending sync.WaitGroup
-	for _, server := range servers {
-		for _, rawURL := range server.URLs {
-			uri, err := stun.ParseURI(rawURL)
-			if err != nil || uri.Scheme != stun.SchemeTypeSTUN ||
-				uri.Proto != stun.ProtoTypeUDP || uri.Port < 1 || uri.Port > 65_535 {
-				continue
-			}
-			pending.Add(1)
-			go func() {
-				defer pending.Done()
-				// Resolve each destination independently inside the same bound as
-				// its Binding request; one broken resolver must not stall healthy STUN.
-				addresses, err := resolver.LookupNetIP(surveyContext, "ip4", uri.Host)
-				if err != nil || len(addresses) == 0 {
-					slog.DebugContext(surveyContext, "nat-survey", "event", "resolve-failed", "host", uri.Host, diagnostics.Error(err))
-					return
-				}
-				address := net.UDPAddrFromAddrPort(netip.AddrPortFrom(addresses[0], uint16(uri.Port)))
-				started := time.Now()
-				mapped, err := engine.mux.GetXORMappedAddrContext(
-					surveyContext,
-					address,
-					stunSurveyTimeout,
-				)
-				if err != nil || mapped == nil || mapped.IP.To4() == nil ||
-					mapped.Port < 1 || mapped.Port > 65_535 {
-					slog.DebugContext(surveyContext, "nat-survey", "event", "binding-failed", "serverPort", address.Port,
-						"durationMs", time.Since(started).Milliseconds(), diagnostics.Error(err))
-					return
-				}
-				slog.DebugContext(surveyContext, "nat-survey", "event", "binding", "serverPort", address.Port,
-					"localPort", engine.localPort, "mappedAddress", diagnostics.ID(mapped.IP.String()), "mappedPort", mapped.Port,
-					"durationMs", time.Since(started).Milliseconds())
-				select {
-				case results <- mappedAddress{address: mapped.IP.String(), port: mapped.Port}:
-				case <-surveyContext.Done():
-				}
-			}()
-		}
-	}
-	go func() {
-		pending.Wait()
-		close(results)
-	}()
-	seen := map[string]struct{}{}
-	for {
-		select {
-		case value, ok := <-results:
-			if !ok {
-				return
-			}
-			key := value.address + ":" + strconv.Itoa(value.port)
-			if _, found := seen[key]; found {
-				continue
-			}
-			seen[key] = struct{}{}
-			emit(value)
-		case <-surveyContext.Done():
-			return
-		}
-	}
 }
 
 func stunServers(servers []webrtc.ICEServer) []webrtc.ICEServer {
@@ -261,10 +132,6 @@ func stunServers(servers []webrtc.ICEServer) []webrtc.ICEServer {
 		}
 	}
 	return result
-}
-
-func (engine *Engine) ListenAddress() string {
-	return engine.listenAddress
 }
 
 // NewSource coalesces recovery requests by physical output slot; [-1] requests
@@ -346,13 +213,17 @@ func (engine *Engine) Close() error {
 	for publication := range engine.publications {
 		publications = append(publications, publication)
 	}
+	sockets := make([]*iceSocket, 0, len(engine.sockets))
+	for socket := range engine.sockets {
+		sockets = append(sockets, socket)
+	}
 	engine.mu.Unlock()
 	closeEdges(edges)
 	for _, publication := range publications {
 		_ = publication.Close()
 	}
-	if engine.portMapping != nil {
-		engine.portMapping.Close()
+	for _, socket := range sockets {
+		socket.close()
 	}
-	return engine.mux.Close()
+	return nil
 }

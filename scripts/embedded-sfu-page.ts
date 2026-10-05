@@ -14,7 +14,8 @@ import type { SfuConnectionConfig } from "../src/client/sfu/peer";
 import { NativeClient } from "../src/client/native/client";
 import { NativeSfuPublisher } from "../src/client/native/native-sfu-publisher";
 import { defaultNativeCapturePath } from "../src/client/native/capture-selection";
-import type { HostPublisherTransport } from "../src/client/media/host-sfu-route";
+import { HostSfuRoute, type HostPublisherTransport } from "../src/client/media/host-sfu-route";
+import { ViewerSfuRoute } from "../src/client/media/viewer-sfu-route";
 
 const high: QualitySettings = {
   resolution: "720p", maxFramerate: 15, maxBitrate: 2_000_000,
@@ -22,6 +23,7 @@ const high: QualitySettings = {
 };
 const low: QualitySettings = { ...high, resolution: "480p" };
 const shareGeneration = crypto.randomUUID();
+const clientId = crypto.randomUUID();
 let socket: WebSocket | null = null;
 let publisher: HostPublisherTransport | null = null;
 let native: NativeClient | null = null;
@@ -30,14 +32,16 @@ let nativeShareStopped = false;
 let nativeFramesPerSecond = 0;
 let nativeBitrateKbps = 0;
 let nativeEncodingCount = 0;
-let subscriber: SfuSubscriber | null = null;
+let viewerRoute: ViewerSfuRoute | null = null;
+let hostRoute: HostSfuRoute | null = null;
+let profile = high;
+let failSubscriber: (() => void) | null = null;
 let configuration: SfuConnectionConfig | null = null;
 let source: MediaStream | null = null;
 let audio: AudioContext | null = null;
 let canvas: HTMLCanvasElement | null = null;
 let video: HTMLVideoElement | null = null;
 let drawTimer: number | null = null;
-let preparedRevision = 0;
 let decoded = false;
 let authenticated = false;
 let committed = false;
@@ -52,10 +56,19 @@ let audioKbps = 0;
 let audioCodec: string | null = null;
 let error: string | null = null;
 let messageTail = Promise.resolve();
+let routeStatus: string | null = null;
+const routeEvents: Array<{ type: string; revision?: number; phase?: string; connectionId?: string | null }> = [];
+
+function traceRoute(message: { type: string; revision?: number; phase?: string; connectionId?: string | null }): void {
+  routeEvents.push({ type: message.type, revision: message.revision, phase: message.phase, connectionId: message.connectionId });
+  if (routeEvents.length > 20) routeEvents.shift();
+}
 
 function send(message: ClientMessage): boolean {
   clientMessageSchema.parse(message);
   if (socket?.readyState !== WebSocket.OPEN) return false;
+  if (message.type === "route-failed" || message.type === "route-ready") traceRoute(message);
+  if (message.type === "sfu-signal" && message.kind !== "candidate") traceRoute({ ...message, type: `send-${message.kind}` });
   if (message.type === "sfu-signal" && message.description?.type === "offer") {
     simulcast = message.description.sdp.includes("a=simulcast:send q;h");
   }
@@ -68,106 +81,105 @@ function failed(reason: unknown): void {
 }
 
 async function accept(message: ServerMessage, host: boolean): Promise<void> {
+  if (message.type === "route-update" || message.type === "sfu-config" || message.type === "route-status") traceRoute(message);
+  if (message.type === "route-status") routeStatus = message.state;
+  if (message.type === "sfu-signal" && message.kind !== "candidate") traceRoute({ ...message, type: `receive-${message.kind}` });
   if (message.type === "error") throw new Error(`${message.code}: ${message.message}`);
-  if (message.type === "authenticated") authenticated = true;
+  if (message.type === "authenticated") {
+    authenticated = true;
+    if (host && !hostRoute) hostRoute = new HostSfuRoute({
+      send, getStream: () => source, getProfile: () => profile,
+      getVideoCodec: () => codec, reconcileChildren: () => undefined,
+      createPublisher: (onDisconnected, onStats) => {
+        publisher = native
+          ? new NativeSfuPublisher(native, shareGeneration, { iceServers: [] }, {
+              send, onDisconnected, onStats: metrics => {
+                onStats(metrics);
+                nativeFramesPerSecond = metrics?.framesPerSecond ?? 0;
+                nativeBitrateKbps = metrics?.bitrateKbps ?? 0;
+                nativeEncodingCount = metrics?.videoEncodingCount ?? 0;
+              },
+            })
+          : new SfuPublisher({ send, onDisconnected, onStats });
+        return publisher;
+      },
+    });
+    await hostRoute?.resyncAuthoritative({ revision: message.routeRevision,
+      phase: "active", assignment: message.routeAssignment });
+    if (!host && !viewerRoute) {
+      video = document.createElement("video");
+      video.volume = 0.1;
+      video.autoplay = true;
+      video.playsInline = true;
+      video.style.cssText = "max-width:100%;width:640px";
+      document.body.append(video);
+      viewerRoute = new ViewerSfuRoute(message.peerId, {
+        send, activatePeer: () => true,
+        onSfuStream: stream => {
+          decoded = committed = true;
+          if (video && video.srcObject !== stream) {
+            video.srcObject = stream;
+            void video.play().catch(failed);
+          }
+        },
+        onSfuUpdate: metrics => {
+          audioKbps = metrics?.audioBitrateKbps ?? 0;
+          audioCodec = metrics?.audioCodec ?? null;
+        },
+        createSubscriber: events => {
+          const transport = new SfuSubscriber({ ...events, send,
+            onState: state => { traceRoute({ type: `media-${state}` }); events.onState(state); },
+            onFirstDecodedFrame: () => { traceRoute({ type: "decoded-frame" }); return events.onFirstDecodedFrame(); },
+          });
+          failSubscriber = () => { void transport.disconnect(); events.onDisconnected(); };
+          return transport;
+        },
+      });
+    }
+    await viewerRoute?.resyncAuthoritative({ revision: message.routeRevision,
+      phase: "active", assignment: message.routeAssignment }, message.peerId);
+  }
   if (message.type === "sharing-stopped") {
     sharingStopped = true;
-    await subscriber?.disconnect();
+    await viewerRoute?.disconnect();
   }
   if (message.type === "route-update") {
+    if (message.phase === "prepare") routeStatus = null;
+    viewerRoute?.accept(message);
+    await hostRoute?.acceptAndWait(message);
     if (message.phase === "prepare" && !host) {
       if (message.candidate.transport === "direct") {
         // Exercise the ordinary fallback operation without changing room policy.
         peerFailures += 1;
         send({ type: "route-failed", revision: message.revision,
           phase: "prepare", connectionId: message.candidate.connectionId });
-      } else preparedRevision = message.revision;
-    }
-    if (message.phase === "active") {
-      if (!host && message.assignment.upstream.kind === "sfu") {
-        if (!decoded) throw new Error("SFU committed before decoded-frame proof");
-        committed = true;
-      }
-      if (configuration && message.assignment.sfuPublicationGeneration === configuration.publicationGeneration) {
-        configuration = { ...configuration, revision: message.revision };
-        publisher?.updateConfig(configuration);
-        subscriber?.updateConfig(configuration);
       }
     }
   }
   if (message.type === "sfu-config") {
-    if (configuration) {
-      if (configuration.connectionId !== message.connectionId ||
-          configuration.publicationGeneration !== message.publicationGeneration) {
-        throw new Error("Unexpected SFU replacement during bounded acceptance");
-      }
-      configuration = message;
-      publisher?.updateConfig(message);
-      subscriber?.updateConfig(message);
-      return;
-    }
     configuration = message;
     if (host) {
-      const events = { send, onDisconnected: () => {
-        if (!stopping) failed("Publisher disconnected");
-      } };
-      publisher = native
-        ? new NativeSfuPublisher(native, shareGeneration, { iceServers: [] }, { ...events,
-            onStats: (metrics) => {
-              nativeFramesPerSecond = metrics?.framesPerSecond ?? 0;
-              nativeBitrateKbps = metrics?.bitrateKbps ?? 0;
-              nativeEncodingCount = metrics?.videoEncodingCount ?? 0;
-            },
-          })
-        : new SfuPublisher(events);
-      await publisher.connect(message);
-      published = await publisher.activate(source!, high, codec);
-      if (!published) throw new Error("Publisher did not activate");
-    } else {
-      video = document.createElement("video");
-      video.muted = false;
-      video.volume = 0.1;
-      video.autoplay = true;
-      video.playsInline = true;
-      video.style.cssText = "max-width:100%;width:640px";
-      document.body.append(video);
-      subscriber = new SfuSubscriber({
-        send,
-        onStream: (stream) => {
-          if (!video || video.srcObject === stream) return;
-          video.srcObject = stream;
-          if (stream) void video.play().catch(failed);
-        },
-        onStats: (metrics) => {
-          audioKbps = metrics.audioBitrateKbps ?? 0;
-          audioCodec = metrics.audioCodec;
-        },
-        onFirstDecodedFrame: () => {
-          decoded = true;
-          return send({ type: "route-ready", revision: preparedRevision, phase: "prepare" });
-        },
-        onDisconnected: () => { if (!sharingStopped) failed("Subscriber disconnected"); },
-      });
-      await subscriber.connect(message);
-      subscriber.armDecodedFrameProof();
-      subscriber.activate();
-    }
+      await hostRoute?.acceptConfig(message);
+      published = publisher !== null;
+    } else await viewerRoute?.acceptConfig(message);
   }
   if (message.type === "sfu-signal") {
-    await publisher?.acceptSignal(message);
-    await subscriber?.acceptSignal(message);
+    await hostRoute?.acceptSignal(message);
+    await viewerRoute?.acceptSignal(message);
   }
 }
 
 async function connect(room: CreateRoomResponse, host: boolean): Promise<void> {
   socket = new WebSocket(new URL("/signal", location.href).href.replace(/^http/, "ws"));
+  const connection = socket;
   socket.addEventListener("message", ({ data }) => {
     messageTail = messageTail.then(() => accept(decodeServerMessage(String(data)), host)).catch(failed);
   });
   socket.addEventListener("error", () => failed("Room WebSocket failed"));
   socket.addEventListener("close", (event) => {
+    if (socket !== connection) return;
     if (host && stopping && event.code === 1000 && event.reason === "Sharing stopped") {
-      void publisher?.disconnect().then(() => { publicationRetired = true; });
+      void hostRoute?.disconnect().then(() => { publicationRetired = true; });
     } else if (!stopping && !sharingStopped) failed(`Unexpected room socket close: ${event.code}`);
   });
   await new Promise<void>((resolve, reject) => {
@@ -175,14 +187,14 @@ async function connect(room: CreateRoomResponse, host: boolean): Promise<void> {
     socket!.addEventListener("open", () => { clearTimeout(timer); resolve(); }, { once: true });
   });
   const common = { type: "authenticate", protocol: SIGNALING_PROTOCOL,
-    roomId: room.roomId, clientId: crypto.randomUUID() } as const;
+    roomId: room.roomId, clientId } as const;
   send(host
     ? { ...common, role: "host", token: room.hostToken, shareGeneration,
         qualitySettings: high, routePolicy: { peerOnly: false, topologyOptimization: false, natPrediction: false } }
     : { ...common, role: "viewer", viewerGrant: new URLSearchParams(new URL(room.inviteUrl).hash.slice(1)).get("v")! });
 }
 
-export async function startHost(nativeSource?: { title: string; port: number }, selectedCodec: "vp8" | "h264" = "vp8"): Promise<CreateRoomResponse> {
+export async function startHost(nativeSource?: { title: string; port: number }, selectedCodec: "vp8" | "h264" = "vp8", display = false): Promise<CreateRoomResponse> {
   codec = selectedCodec;
   const response = await fetch("/api/rooms", {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -202,6 +214,7 @@ export async function startHost(nativeSource?: { title: string; port: number }, 
     const started = await native.startShare({ shareId: shareGeneration, source: target,
       codec, audio: true, profile: high, edgeCapacity: 2, ...path });
     nativeShareStarted = true;
+    source = new MediaStream();
     if (started.codec !== codec || !started.audio) throw new Error("Requested Native codec and Opus capture did not start");
     await connect(room, true);
     return room;
@@ -222,30 +235,93 @@ export async function startHost(nativeSource?: { title: string; port: number }, 
     context.font = "48px sans-serif";
     context.fillText(String(frame), 40, 240);
   }, 1000 / 15);
-  source = canvas.captureStream(15);
+  source = display ? await navigator.mediaDevices.getDisplayMedia({
+    video: { width: 1280, height: 720, frameRate: 15 }, audio: false,
+  }) : canvas.captureStream(15);
   audio = new AudioContext();
-  const tone = audio.createOscillator();
   const gain = audio.createGain();
   gain.gain.value = 0.05;
   const destination = audio.createMediaStreamDestination();
-  tone.connect(gain).connect(destination);
-  tone.start();
+  const channels = audio.createChannelMerger(2);
+  [500, 1500].forEach((frequency, channel) => {
+    const tone = audio!.createOscillator();
+    tone.frequency.value = frequency;
+    tone.connect(channels, 0, channel);
+    tone.start();
+  });
+  channels.connect(gain).connect(destination);
   await audio.resume();
   source.addTrack(destination.stream.getAudioTracks()[0]!);
   await connect(room, true);
   return room;
 }
 
+// Check decoded channels, not just /2 in SDP (Opus also uses that for mono).
+export async function audioSeparation(stream = video?.srcObject): Promise<number[]> {
+  if (!(stream instanceof MediaStream) || !stream.getAudioTracks().length) throw new Error("No received audio");
+  const context = new AudioContext();
+  try {
+    const input = context.createMediaStreamSource(stream);
+    const splitter = context.createChannelSplitter(2);
+    const sink = context.createGain();
+    sink.gain.value = 0;
+    sink.connect(context.destination);
+    input.connect(splitter);
+    const analyzers = [0, 1].map(channel => {
+      const analyzer = context.createAnalyser();
+      analyzer.fftSize = 8192;
+      analyzer.smoothingTimeConstant = 0;
+      splitter.connect(analyzer, channel);
+      analyzer.connect(sink);
+      return analyzer;
+    });
+    await context.resume();
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    return analyzers.map((analyzer, channel) => {
+      const bins = new Float32Array(analyzer.frequencyBinCount);
+      analyzer.getFloatFrequencyData(bins);
+      const level = (frequency: number) => {
+        const bin = Math.round(frequency * analyzer.fftSize / context.sampleRate);
+        return Math.max(-120, ...bins.slice(bin - 1, bin + 2));
+      };
+      return level(channel === 0 ? 500 : 1500) - level(channel === 0 ? 1500 : 500);
+    });
+  } finally {
+    await context.close();
+  }
+}
+
 export async function startViewer(room: CreateRoomResponse): Promise<void> {
+  await connect(room, false);
+}
+
+export async function reconnectViewer(room: CreateRoomResponse): Promise<void> {
+  const previous = socket;
+  socket = null;
+  previous?.close();
+  authenticated = false;
   await connect(room, false);
 }
 
 export function snapshot() {
   return { authenticated, published, simulcast, decoded, committed, peerFailures,
+    visibility: document.visibilityState, capture: source?.getVideoTracks()[0]?.getSettings(),
+    routeEvents, routeStatus,
+    connectionId: configuration?.connectionId,
     audioKbps, audioCodec, publicationRetired, sharingStopped, nativeShareStarted, nativeShareStopped,
     nativeFramesPerSecond, nativeBitrateKbps, nativeEncodingCount,
     warning: publisher?.getQualityWarning?.() ?? null,
     failureStage: publisher?.getFailureStage?.() ?? null, error };
+}
+
+// Fault injection retires real media; the production route owner must negotiate
+// and decode on a new server-owned edge before the gate counts recovery.
+export function failSubscription(): string {
+  if (!failSubscriber || !configuration || !committed) throw new Error("No active subscription");
+  const previous = configuration.connectionId;
+  decoded = committed = false;
+  failSubscriber();
+  return previous;
 }
 
 export async function audioEnergy(): Promise<number> {
@@ -283,8 +359,36 @@ export async function lowerProfile(): Promise<boolean> {
     canvas.width = 854;
     canvas.height = 480;
   }
+  profile = low;
   send({ type: "set-quality-settings", qualitySettings: low });
-  return await publisher.updateProfile(low);
+  return await hostRoute!.updateProfile(low);
+}
+
+export function pause(paused: boolean): void {
+  source?.getTracks().forEach(track => { track.enabled = !paused; });
+  hostRoute?.setPaused(paused);
+}
+
+// Exercise the existing server-to-publisher demand contract independently of
+// the local machine's unconstrained subscriber bandwidth.
+export async function demandLayers(activeCount: number): Promise<void> {
+  if (!publisher || !configuration || native) throw new Error("Browser publisher is unavailable");
+  const { revision, publicationGeneration, connectionId } = configuration;
+  await publisher.acceptSignal({ type: "sfu-signal", kind: "layers", activeCount,
+    revision, publicationGeneration, connectionId });
+}
+
+export async function replaceSource(): Promise<boolean> {
+  if (!source || !hostRoute || native) throw new Error("Browser source is unavailable");
+  const previous = source;
+  source = previous.clone();
+  if (!await hostRoute.replaceStream(source)) {
+    source.getTracks().forEach(track => track.stop());
+    source = previous;
+    return false;
+  }
+  previous.getTracks().forEach(track => track.stop());
+  return true;
 }
 
 export function stopSharing(): void {
@@ -294,8 +398,8 @@ export function stopSharing(): void {
 
 export async function stop(): Promise<boolean> {
   stopping = true;
-  await publisher?.disconnect();
-  await subscriber?.disconnect();
+  await hostRoute?.disconnect();
+  await viewerRoute?.disconnect();
   if (native) {
     if (nativeShareStarted) {
       await native.stopShare(shareGeneration);

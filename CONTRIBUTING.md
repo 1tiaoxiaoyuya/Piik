@@ -108,8 +108,11 @@ does not establish coverage.
   and deterministic native regressions. The Linux App packaging job includes
   its headless GStreamer output-profile and retirement test; this does not
   establish physical screen/audio capture on that runner.
+  The macOS frame self-test additionally needs an available hardware H.264
+  encoder. A runner without one reports that check as skipped and still checks
+  compilation, capability/source responses and the packaged App's startup.
 - `npm run check:container -- <local-image> <full-SHA>` checks the Compose recipe
-  against a packaged linux/amd64 image: embedded Web, P2P/STUN, optional SFU
+  against a packaged native Linux image (amd64 or arm64): embedded Web, P2P/STUN, optional SFU
   startup, room persistence across recreation, diagnostics and clean shutdown.
   It requires Docker Compose v2 and available recipe ports on an isolated runner;
   its temporary project and volumes are removed after the check.
@@ -124,7 +127,8 @@ does not establish coverage.
   path. Keep browser profiles isolated and consider the active firewall when
   diagnosing connection failures rather than changing global firewall rules.
 - CI, versioning and release automation belong to complete, accepted squash
-  merges into `main`; ordinary branch pushes and PRs stay quiet. The
+  merges into `main`; ordinary branch pushes stay quiet. PRs run only the
+  lightweight public release-note check before merge. The
   [versioning policy](./docs/standards/versioning.md) owns version selection,
   publication and activation state. Package the merged SHA without writing
   version-record commits back to `main`.

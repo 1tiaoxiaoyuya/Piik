@@ -28,6 +28,14 @@ Hosted and Local always use this controller. The former rollout switch and
 separate Host-star authority are removed; SFU availability is still selected by
 configuration and the room's privacy policy, not by another routing mode.
 
+The optional Hosted `SFU_ONLY` policy restricts this controller's candidate
+eligibility to SFU. It reuses the publication/subscription ledger, deadlines,
+first-frame commit and recovery. It does not create another graph or scheduler.
+It disables Peer relay and background Peer work; admission failure does not
+relax the restriction. The service rejects an explicit peer-only request instead
+of treating it as permission to forward media. Default P2P-first and App Local
+behavior are unchanged.
+
 ### One Capacity Rule
 
 Every non-server endpoint uses one server-authoritative steady outbound media-
@@ -261,6 +269,12 @@ Authoritative Host pause aborts the pending operation and reservations, preserve
 the committed graph, and leaves new Viewers waiting. Resume starts
 reconciliation from the current graph. Missing or suspended observations do
 not create route-failure authority.
+
+Confirmed departure ends the participant's physical media authority before
+descendants finish recovery, including during Host pause. A departed relay may
+remain as an inactive graph anchor only. Publishing that retirement supersedes
+any pending candidate through the same operation owner and revision sequence;
+its late readiness cannot restore the retired route.
 
 Native-edge convergence runs inside the same graph, reconcile loop, and
 room-serial child operation when its per-share gate is enabled. Availability

@@ -83,6 +83,20 @@ func newServer(t *testing.T, options Options) *Server {
 	return server
 }
 
+func TestApplicationPagesCannotBeEmbeddedWithoutAProxy(t *testing.T) {
+	server := newServer(t, Options{})
+	for _, accepting := range []bool{false, true} {
+		server.acceptingTraffic.Store(accepting)
+		for _, path := range []string{"/", "/api/missing", "/healthz"} {
+			response := httptest.NewRecorder()
+			server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+			if response.Header().Get("Content-Security-Policy") != "frame-ancestors 'none'" || response.Header().Get("X-Frame-Options") != "DENY" {
+				t.Fatalf("unprotected response: accepting=%v path=%s", accepting, path)
+			}
+		}
+	}
+}
+
 type harness struct {
 	*Server
 	t       *testing.T
@@ -352,7 +366,17 @@ func TestCapabilitiesReportServicesDisabledByDefault(t *testing.T) {
 	server := start(t, Options{Config: testConfig(t)})
 
 	server.do(http.MethodGet, "/api/capabilities").
-		expect(http.StatusOK, `{"connectionAttemptProgress4":true,"sfu":false,"natPrediction":false}`)
+		expect(http.StatusOK, `{"connectionAttemptProgress4":true,"sfu":false,"natPrediction":false,"roomInteractions":true,"hostRoomSession":true}`)
+
+}
+
+func TestCapabilitiesReportSFUOnlyPolicy(t *testing.T) {
+	configuration := testConfig(t)
+	configuration.SFU = &config.SFUConfig{ListenHost: "127.0.0.1", Port: 0, Only: true}
+	configuration.NATPredictionEnabled = true
+	server := start(t, Options{Config: configuration})
+	server.do(http.MethodGet, "/api/capabilities").
+		expect(http.StatusOK, `{"connectionAttemptProgress4":true,"sfu":true,"sfuOnly":true,"natPrediction":false,"roomInteractions":true,"hostRoomSession":true}`)
 }
 
 func TestCapabilitiesReportOptionalNATPredictionWithoutExposingConfiguration(t *testing.T) {
@@ -363,7 +387,7 @@ func TestCapabilitiesReportOptionalNATPredictionWithoutExposingConfiguration(t *
 	server := start(t, Options{Config: configuration})
 
 	server.do(http.MethodGet, "/api/capabilities").
-		expect(http.StatusOK, `{"connectionAttemptProgress4":true,"sfu":false,"natPrediction":true}`).
+		expect(http.StatusOK, `{"connectionAttemptProgress4":true,"sfu":false,"natPrediction":true,"roomInteractions":true,"hostRoomSession":true}`).
 		expectHeader("Cache-Control", "no-store").
 		expectHeader("X-Content-Type-Options", "nosniff")
 
@@ -406,7 +430,8 @@ func TestSFUListenerFollowsApplicationCloseAndEnd(t *testing.T) {
 				t.Fatal("missing runtime owner")
 			}
 			server.do(http.MethodGet, "/api/capabilities").
-				expect(http.StatusOK, `{"connectionAttemptProgress4":true,"sfu":true,"natPrediction":false}`)
+				expect(http.StatusOK, `{"connectionAttemptProgress4":true,"sfu":true,"natPrediction":false,"roomInteractions":true,"hostRoomSession":true}`)
+
 			var err error
 			if ending {
 				err = server.End(context.Background())

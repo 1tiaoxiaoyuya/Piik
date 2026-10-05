@@ -25,6 +25,11 @@ Keep those internal values at the first public release: resetting schema or
 authorization counters for visual consistency can invalidate data or stale-work
 fences. A room number is a user-facing address, not a software version.
 The private tooling-only npm package carries no independent product version.
+The App launcher displays its installed version from the existing launcher state;
+Server startup logs retain the running version and revision. The website may
+display GitHub's latest stable tag and `published_at` as optional metadata, never
+a manually maintained version or the installed App's identity. Publication time
+is distinct from build time; an unavailable check must not block downloads.
 
 ## Public Compatibility Promise
 
@@ -94,8 +99,8 @@ release descriptor. Fixed names allow GitHub's native latest-asset links;
 [website operations](../operations/website.md#preview) owns download presentation
 and verification of the matching Gitee mirror.
 
-Public Release attachments contain the three App ZIPs and the Server runtime
-archive. Package descriptors (`.release.json`), file manifests (`.manifest.tsv`)
+Public Release attachments contain the App ZIPs and Server runtime archives
+for the registered package targets. Package descriptors (`.release.json`), file manifests (`.manifest.tsv`)
 and standalone `.sha256` files remain build/deployment inputs in the local output
 and CI artifacts; publishers validate them but do not upload them to GitHub or
 Gitee Releases. The release body includes a collapsed full source SHA and
@@ -155,7 +160,10 @@ An older draft retried after a newer release cannot take over `latest`.
 `PIIK_RELEASES_ENABLED` is a GitHub repository activation variable, not a product
 setting. Until the first release is explicitly enabled,
 main runs validation and manual `app_checks` dispatches create candidates only.
-Ordinary branches and PRs do not run cloud CI. [GitHub operations](../operations/github.md)
+Ordinary branches do not run cloud CI. PRs run only a read-only release-note
+check, including after edits to their body; product scope uses the same path
+owner as publication and the PR's net diff. Packaging and publication remain
+post-merge. [GitHub operations](../operations/github.md)
 owns activation and main protection; no workflow changes repository visibility.
 
 Updates remain explicit, outside an active share, using complete matching
@@ -167,12 +175,15 @@ introduced by this policy.
 
 ## Container Distribution
 
-`ghcr.io/tntcrafthim/piik` wraps the same verified linux/amd64 Server archive as
-the GitHub release. The packager's optional `--container-image <tag>` builds from
-that extraction; CI checks its Compose recipe and transfers the verified image
+`ghcr.io/tntcrafthim/piik` wraps the same verified linux/amd64 and linux/arm64
+Server archives as the GitHub release. The packager's optional
+`--container-image <tag>` builds from that architecture's extraction;
+CI checks its Compose recipe on the matching native runner and transfers the verified image
 between jobs as a CI artifact, outside public Release attachments.
 `publish-container.mjs` requires matching published GitHub source, version and
-Server digest in the image labels. Existing version tags are retained; `latest`
+Server digest in each image's labels. A standard multi-platform image index
+selects the matching architecture; platform tags are immutable inputs to that
+index. Existing version tags are retained; `latest`
 moves only when that version is GitHub's latest. Manual candidates never publish.
 The [release approval boundary](#automatic-publication) and
 [first-publication visibility check](../operations/github.md#container-registry)
@@ -190,12 +201,17 @@ work logs, audit handoffs and unverified claims outside this public section.
 first-parent commits since the previous stable tag. Standalone website and
 documentation phases need no product release notes. The first release uses
 only its launch commit's product introduction; private development history is
-not a launch changelog. Missing, empty or duplicate sections fail validation
-before packaging/publication. GitHub Actions shows the generated text in its
+not a launch changelog. Missing, empty, duplicate or visibly encoding-damaged
+sections fail validation before packaging/publication. GitHub Actions shows the generated text in its
 run summary. A manual candidate with an explicit version also previews it, so
 prepare its commit text before dispatching a release rehearsal. A manual
 candidate with no product changes may still be built; its summary reports that
 there are no product release notes, and publication remains disabled.
+
+Supply multiline PR/release copy through a UTF-8 file and read back the stored
+body before integration. A terminal preview alone does not prove that Chinese
+text survived the shell/API boundary. Do not repair published history by
+rewriting main.
 
 The publisher appends generated build identity and package checksums to the
 reviewed text, passes it through a temporary notes file to GitHub, then removes

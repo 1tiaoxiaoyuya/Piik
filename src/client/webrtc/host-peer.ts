@@ -8,7 +8,6 @@ import { debugError, debugEvent } from "../lib/debug";
 import { debugTrack, observeDebugConnection } from "../lib/debug-webrtc";
 import {
   applyVideoCaptureProfile,
-  cloneSenderVideoTrack,
   configureScreenAudioSender,
   configureVideoSender,
   needsStartupVideoProfile,
@@ -21,6 +20,7 @@ import {
   type QualityProfile,
   type ScreenAudioQuality,
 } from "../media/quality";
+import { cloneSenderVideoTrack, stopSenderVideoTrack } from "../media/sender-video-track";
 import { EMPTY_METRICS, type PeerSnapshot } from "../types";
 import {
   captureMetrics,
@@ -41,6 +41,9 @@ import {
 } from "./nat-prediction";
 
 const MAX_PENDING_CANDIDATES = 64;
+// An audio-direction change must not wait forever for a lost SDP answer.
+// Initial acquisition and ICE restart keep their existing route/recovery owners.
+export const RENEGOTIATION_ANSWER_TIMEOUT_MS = 15_000;
 type PeerIceConfig = Pick<RTCConfiguration, "iceServers"> & {
   natPredictionStunUrls?: readonly string[];
 };
@@ -97,6 +100,7 @@ export class HostPeer {
   private profileRevision = 0;
   private negotiationEpoch = 0;
   private ordinaryAnswerEpoch: number | null = null;
+  private answerTimer: number | null = null;
   private pendingNegotiation = false;
   private senderMutationTail: Promise<void> = Promise.resolve();
   private negotiationTail: Promise<void> = Promise.resolve();
@@ -126,7 +130,7 @@ export class HostPeer {
     const sourceVideoTrack = stream.getVideoTracks()[0] ?? null;
     this.paused = sourceVideoTrack?.enabled === false;
     this.senderVideoTrack = sourceVideoTrack
-      ? cloneSenderVideoTrack(sourceVideoTrack)
+      ? this.cloneVideoTrack(sourceVideoTrack)
       : null;
     this.startupVideoProfilePending = needsStartupVideoProfile(desiredProfile);
     this.encodedStreamsEnabled = !!videoPool && supportsBrowserEncoding();
@@ -140,7 +144,7 @@ export class HostPeer {
         ),
       });
     } catch (error) {
-      this.senderVideoTrack?.stop();
+      stopSenderVideoTrack(this.senderVideoTrack);
       throw error;
     }
     observeDebugConnection(this.connection, { connectionId, peerId, role: "send" });
@@ -209,7 +213,7 @@ export class HostPeer {
         audio: true,
       });
     });
-    if (!(await this.createOffer(false)) || this.disposed) {
+    if (!(await this.createOffer()) || this.disposed) {
       return false;
     }
     this.statsTimer = window.setInterval(() => {
@@ -241,7 +245,7 @@ export class HostPeer {
       }
 
       const videoChanged = this.stream.getVideoTracks()[0] !== nextSourceVideoTrack;
-      const nextVideoTrack = videoChanged ? cloneSenderVideoTrack(nextSourceVideoTrack) : previousVideoTrack;
+      const nextVideoTrack = videoChanged ? this.cloneVideoTrack(nextSourceVideoTrack) : previousVideoTrack;
       let retainedNextVideoTrack = false;
       const nextAudioTrack = nextStream.getAudioTracks()[0] ?? null;
       const nextAudioDirection = nextAudioTrack ? "sendonly" : "inactive";
@@ -261,6 +265,7 @@ export class HostPeer {
         try {
           if (videoChanged) await this.waitForOperation(() => videoSender.replaceTrack(nextVideoTrack));
           await this.waitForOperation(() => audioSender.replaceTrack(nextAudioTrack));
+          if (nextVideoTrack.readyState === "ended") throw new Error("Replacement video track ended");
           if (audioDirectionChanged) {
             audioTransceiver.direction = nextAudioDirection;
           }
@@ -292,7 +297,7 @@ export class HostPeer {
           this.pooledVideo?.dispose();
           this.pooledVideo = null;
           this.attachVideoPool(nextSourceVideoTrack);
-          if (previousVideoTrack !== this.encodedOutput?.track) previousVideoTrack.stop();
+          if (previousVideoTrack !== this.encodedOutput?.track) stopSenderVideoTrack(previousVideoTrack);
           this.startupVideoProfilePending = needsStartupVideoProfile(this.desiredProfile);
           this.startupFramesBaseline = null;
           this.snapshot = { ...this.snapshot, metrics: { ...EMPTY_METRICS } };
@@ -306,10 +311,10 @@ export class HostPeer {
         if (this.disposed) return false;
         this.snapshot = { ...this.snapshot, error: null };
         this.emit();
-        return !audioDirectionChanged || (await this.createOffer(false));
+        return !audioDirectionChanged || (await this.createOffer());
       } finally {
         if (videoChanged && !retainedNextVideoTrack) {
-          nextVideoTrack.stop();
+          stopSenderVideoTrack(nextVideoTrack);
         }
         if (this.replacementVideoTrack === nextVideoTrack) {
           this.replacementVideoTrack = null;
@@ -521,7 +526,7 @@ export class HostPeer {
     this.encodedOutput?.dispose();
     this.encodedOutput = null;
     this.localIceCandidates.discard();
-    this.senderVideoTrack?.stop();
+    stopSenderVideoTrack(this.senderVideoTrack);
     this.senderVideoTrack = null;
     this.audioTransceiver = null;
   }
@@ -560,6 +565,12 @@ export class HostPeer {
     this.connection.addEventListener("iceconnectionstatechange", () => this.emit());
   }
 
+  private cloneVideoTrack(source: MediaStreamTrack): MediaStreamTrack {
+    return cloneSenderVideoTrack(source, (track) => {
+      if (this.senderVideoTrack === track) this.fail();
+    });
+  }
+
   private attachVideoPool(source: MediaStreamTrack): void {
     const sender = this.videoSender;
     if (!sender || !this.videoPool || !this.encodedOutput) return;
@@ -576,7 +587,7 @@ export class HostPeer {
       () => this.enqueueSenderMutation(async () => {
         if (!owns()) return false;
         const previous = this.senderVideoTrack!;
-        const next = binding?.carrierScale() === undefined ? cloneSenderVideoTrack(source) : this.encodedOutput!.track;
+        const next = binding?.carrierScale() === undefined ? this.cloneVideoTrack(source) : this.encodedOutput!.track;
         try {
           this.applyPausedState(next, null);
           // The producer already limits real frames. Filtering its requested
@@ -584,21 +595,22 @@ export class HostPeer {
           if (next !== this.encodedOutput?.track) {
             await this.waitForOperation(() => applyVideoCaptureProfile(next, this.desiredProfile));
           }
-          if (!owns()) { if (next !== this.encodedOutput?.track) next.stop(); return false; }
+          if (!owns()) { if (next !== this.encodedOutput?.track) stopSenderVideoTrack(next); return false; }
           if (next !== previous) await this.waitForOperation(() => sender.replaceTrack(next));
           await this.waitForOperation(() => configureVideoSender(sender,
             this.startupVideoProfilePending ? startupVideoProfile(this.desiredProfile) : this.desiredProfile,
             binding?.carrierScale()));
           if (!owns()) throw new DOMException("Retired Browser pool binding", "AbortError");
+          if (next.readyState === "ended") throw new Error("Replacement video track ended");
           this.senderVideoTrack = next;
-          if (previous !== next && previous !== this.encodedOutput?.track) previous.stop();
+          if (previous !== next && previous !== this.encodedOutput?.track) stopSenderVideoTrack(previous);
           this.statsAccumulator = createStatsAccumulator();
           return true;
         } catch (error) {
           if (!this.disposed && sender.track !== previous) {
             try { await this.waitForOperation(() => sender.replaceTrack(previous)); } catch (rollbackError) { this.fail(rollbackError); }
           }
-          if (next !== previous && next !== this.encodedOutput?.track) next.stop();
+          if (next !== previous && next !== this.encodedOutput?.track) stopSenderVideoTrack(next);
           if (this.disposed) return false;
           debugError("encoding-pool", "carrier-attachment-failed", error, { connectionId: this.connectionId });
           return false;
@@ -641,7 +653,7 @@ export class HostPeer {
     return result;
   }
 
-  private createOffer(restart: boolean): Promise<boolean> {
+  private createOffer(): Promise<boolean> {
     return this.enqueueNegotiation(async () => {
       if (this.disposed) {
         return false;
@@ -653,7 +665,7 @@ export class HostPeer {
         this.pendingNegotiation = true;
         return true;
       }
-      return this.createOwnedOffer(restart, this.nextNegotiationEpoch());
+      return this.createOwnedOffer(false, this.nextNegotiationEpoch());
     });
   }
 
@@ -663,6 +675,11 @@ export class HostPeer {
   ): Promise<boolean> {
     if (!this.ownsLocalOffer(epoch)) {
       return false;
+    }
+    if (!restart && this.connection.remoteDescription) {
+      this.answerTimer = window.setTimeout(() => {
+        if (this.ownsLocalOffer(epoch)) this.fail(new Error("SDP renegotiation answer timed out"));
+      }, RENEGOTIATION_ANSWER_TIMEOUT_MS);
     }
     try {
       if (restart) {
@@ -702,6 +719,7 @@ export class HostPeer {
       if (this.ordinaryAnswerEpoch === epoch) {
         this.ordinaryAnswerEpoch = null;
       }
+      this.clearAnswerTimer();
       this.setError(error, "host.err.createConnection");
       return false;
     }
@@ -728,6 +746,7 @@ export class HostPeer {
       }
       await this.flushCandidates();
       if (this.ownsAnswer(epoch)) {
+        this.clearAnswerTimer();
         this.ordinaryAnswerEpoch = null;
         if (this.pendingNegotiation) {
           this.pendingNegotiation = false;
@@ -741,9 +760,7 @@ export class HostPeer {
       if (!this.ownsAnswer(epoch)) {
         return;
       }
-      this.ordinaryAnswerEpoch = null;
-      this.pendingNegotiation = false;
-      throw error;
+      this.fail(error);
     }
   }
 
@@ -760,9 +777,15 @@ export class HostPeer {
   }
 
   private nextNegotiationEpoch(): number {
+    this.clearAnswerTimer();
     this.ordinaryAnswerEpoch = null;
     this.negotiationEpoch += 1;
     return this.negotiationEpoch;
+  }
+
+  private clearAnswerTimer(): void {
+    if (this.answerTimer !== null) window.clearTimeout(this.answerTimer);
+    this.answerTimer = null;
   }
 
   private async updateStats(): Promise<void> {

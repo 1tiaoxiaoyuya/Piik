@@ -15,6 +15,7 @@
 #include <wrl/client.h>
 
 #include "capture_error.h"
+#include "mft_event_reader.h"
 
 #include <chrono>
 #include <iomanip>
@@ -72,6 +73,7 @@ struct VideoProfile final {
            << h264_level();
     return output.str();
   }
+  bool accepts_h264_profile_level_id(const std::string& value) const;
 };
 
 constexpr VideoProfile kDefaultVideoProfile{};
@@ -179,8 +181,12 @@ void ValidateMediaTypes(IMFTransform* transform,
 void ValidateCodecReadback(ICodecAPI* codec,
                            const VideoProfile& profile = kDefaultVideoProfile);
 void ForceKeyFrame(ICodecAPI* codec);
+ComPtr<IMFSample> CreateCallerOutputSample(const MFT_OUTPUT_STREAM_INFO& info);
 ComPtr<IMFSample> PullOutput(IMFTransform* transform,
                             const MFT_OUTPUT_STREAM_INFO& info);
+ComPtr<IMFSample> CreateSurfaceSample(ID3D11Texture2D* texture,
+                                      LONGLONG timestamp100ns,
+                                      LONGLONG duration100ns);
 NalSummary InspectAnnexB(const std::vector<UINT8>& bytes);
 std::vector<UINT8> ReadSample(IMFSample* sample);
 
@@ -229,6 +235,7 @@ class LiveEncoder final : public VideoEncoder {
   void WaitForInput(EncoderClock::time_point deadline);
 
   SelectedTransform selected_;
+  MftEventReader events_;
   VideoProfile profile_;
   MFT_OUTPUT_STREAM_INFO output_info_ = {};
   UINT32 input_requests_ = 0;

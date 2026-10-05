@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-09-22
+Last updated: 2026-10-04
 
 This is the compact execution/deployment index. Product modules own behavior,
 [verification status](./verification-status.md) owns unresolved physical limits,
@@ -14,7 +14,8 @@ and Git/PRs own completed history.
 - Hosted Server defaults to SQLite schema 2. Room authority has no inactivity
   expiry; explicit replacement/deletion or grant rotation/revocation ends the
   corresponding authority. Explicit memory mode and App Local end rooms at
-  process exit. Site access retains its separate 24-hour idle lifetime.
+  process exit. Site access retains its separate 24-hour idle lifetime within
+  one service run; service restart requires site-password entry again.
 - Browser/App entry lifecycle and current-edge reconnect ownership repairs
   are implemented. Browser node-local pooling and detailed local Debug export
   remain part of the accepted media surface. Product modules own their behavior;
@@ -33,6 +34,33 @@ and Git/PRs own completed history.
 Website delivery includes a bilingual reader documentation center generated
 from the repository's guides alongside the homepage, with search and detailed
 troubleshooting separate from the homepage FAQ.
+
+## Accepted Interaction Phase
+
+The accepted [room-interaction design](./research/room-interactions.md) includes
+the verified media repairs. It adds authenticated text and reactions
+over existing signaling, with optional local chat overlay and a shared floating
+panel. Its opted-in room session can outlive a publication; capture, quality and
+route owners remain unchanged. Optional Windows screen-audio exclusion uses the
+existing source/mixer boundary. Hosted Server
+also accepts an optional SFU-only policy through the same route controller.
+Windows native capture and thumbnails now share automatic HDR-to-SDR conversion;
+synthetic GPU and Browser reception checks pass, with physical HDR display
+acceptance still pending in [verification status](./verification-status.md).
+Room voice is outside the product plan; Host microphone commentary remains.
+These features are published; physical device limits remain open.
+Release artifacts and operator deployment records own delivery completion;
+[TODO](./todo.md#now) owns remaining work.
+
+## Current Candidate
+
+The owner authorized v1.8.0 publication on 2026-10-04. This phase retains the
+published protocols and 1440p ceiling; immutable release artifacts own delivery
+completion. Follow-up work reviews extension boundaries, implements 4K and more
+resolutions with capability negotiation, then develops Native Magicsock NAT
+traversal. The isolated transport experiment is not part of v1.8.0; its product
+integration and connectivity benefit still require verification.
+[TODO](./todo.md#now) owns remaining work and later release authorization.
 
 ## Deployment
 
@@ -68,7 +96,7 @@ and bounded two-build interoperability have acceptance evidence. Accepted
 product changes publish automatically; standalone website and documentation
 changes validate and deploy the website without creating App/Server versions.
 GitHub/Gitee release comparison, mirror publishing and PR-sourced notes follow
-[versioning](./standards/versioning.md). [Verification status](./verification-status.md#candidate-evidence-boundary)
+[versioning](./standards/versioning.md). [Verification status](./verification-status.md#device-evidence-boundary)
 owns the remaining physical limits; shared lessons live in
 [engineering](./standards/engineering.md).
 

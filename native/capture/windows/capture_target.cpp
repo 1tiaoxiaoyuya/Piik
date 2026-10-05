@@ -19,6 +19,7 @@
 #include "capture_target.h"
 #include "capture_border.h"
 #include "capture_geometry.h"
+#include "capture_sdr.h"
 
 #include <algorithm>
 #include <array>
@@ -166,7 +167,8 @@ std::string JsonString(const std::string& value) {
 
 BOOL CALLBACK CollectWindow(HWND window, LPARAM parameter) {
   auto* targets = reinterpret_cast<std::vector<SourceTarget>*>(parameter);
-  if (targets->size() >= kMaxSources) return FALSE;
+  // FALSE makes EnumWindows report failure; a full list is still usable.
+  if (targets->size() >= kMaxSources) return TRUE;
   if (!IsWindowVisible(window) || GetWindow(window, GW_OWNER) != nullptr) {
     return TRUE;
   }
@@ -209,7 +211,7 @@ BOOL CALLBACK CollectWindow(HWND window, LPARAM parameter) {
 
 BOOL CALLBACK CollectDisplay(HMONITOR monitor, HDC, LPRECT, LPARAM parameter) {
   auto* targets = reinterpret_cast<std::vector<SourceTarget>*>(parameter);
-  if (targets->size() >= kMaxSources) return FALSE;
+  if (targets->size() >= kMaxSources) return TRUE;
   MONITORINFOEXW info{};
   info.cbSize = sizeof(info);
   if (!GetMonitorInfoW(monitor, &info)) return TRUE;
@@ -496,8 +498,11 @@ HRESULT CaptureWithWgc(TargetKind kind, UINT64 source_id,
       if (size.Width <= 0 || size.Height <= 0 || frame_ready == nullptr) {
         result = HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
       } else {
+        windows::CaptureDisplayColor display_color(kind, source_id);
+        const auto color = display_color.Resolve();
+        windows::CaptureSdrConverter sdr(device.Get());
         pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
-            capture_device, DirectXPixelFormat::B8G8R8A8UIntNormalized, 1,
+            capture_device, static_cast<DirectXPixelFormat>(color.Format()), 1,
             size);
         session = pool.CreateCaptureSession(item);
         frame_token = pool.FrameArrived(
@@ -529,6 +534,7 @@ HRESULT CaptureWithWgc(TargetKind kind, UINT64 source_id,
                 ::Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess>();
             ComPtr<ID3D11Texture2D> texture;
             result = access->GetInterface(IID_PPV_ARGS(&texture));
+            if (SUCCEEDED(result)) texture = sdr.Convert(texture.Get(), color);
             D3D11_TEXTURE2D_DESC description{};
             if (SUCCEEDED(result)) texture->GetDesc(&description);
             if (SUCCEEDED(result) &&
@@ -931,10 +937,10 @@ int WriteMicrophoneList() {
     if (FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&enumerator))) ||
         FAILED(enumerator->EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE, &devices))) return 2;
     UINT count = 0;
-    if (FAILED(devices->GetCount(&count)) || count > 64) return 2;
+    if (FAILED(devices->GetCount(&count))) return 2;
     std::cout << '[';
     bool first = true;
-    for (UINT index = 0; index < count; ++index) {
+    for (UINT index = 0; index < count && index < 64; ++index) {
       ComPtr<IMMDevice> device;
       ComPtr<IPropertyStore> properties;
       if (FAILED(devices->Item(index, &device)) || FAILED(device->OpenPropertyStore(STGM_READ, &properties))) continue;
@@ -1015,9 +1021,14 @@ HRESULT ValidateProcessTarget(DWORD pid, UINT64 expected_creation_time) {
   }
   HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
   if (process == nullptr) return HRESULT_FROM_WIN32(GetLastError());
+  const HRESULT result = ValidateProcessTarget(process, expected_creation_time);
+  CloseHandle(process);
+  return result;
+}
+
+HRESULT ValidateProcessTarget(HANDLE process, UINT64 expected_creation_time) {
   UINT64 actual_creation_time = 0;
   HRESULT result = ReadProcessCreationTime(process, &actual_creation_time);
-  CloseHandle(process);
   if (SUCCEEDED(result) && actual_creation_time != expected_creation_time) {
     result = HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
   }
